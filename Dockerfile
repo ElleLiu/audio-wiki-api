@@ -19,4 +19,4 @@ COPY main.py .
 
 # 6. 暴露 8000 端口，并启动 FastAPI 服务
 EXPOSE 8000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD uvicorn main:app --host 0.0.0.0 --port $PORT
