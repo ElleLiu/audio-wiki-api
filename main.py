@@ -72,9 +72,9 @@ def transcribe_with_deepgram(audio_path: str) -> str:
 # ================= 3. 对外开放的 API 接口 =================
 @app.post("/api/process")
 def process_podcast_endpoint(req: dict):
+    # 精准接收前端发来的双重 URL
     download_url = req.get("url", "")
-    # 新增：接收用于在 Markdown 里展示的原始链接
-    original_url = req.get("original_url") or download_url 
+    original_url = req.get("original_url") or download_url
     title = req.get("title", "未命名内容")
     text = req.get("text", "")
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -87,10 +87,11 @@ def process_podcast_endpoint(req: dict):
         raw_text = text
     else:
         print("🎵 未检测到直接文本，启动播客下载转录流水线...")
-        if not url:
+        if not download_url:
             raise HTTPException(status_code=400, detail="未提供有效的 URL")
             
-        audio_info = download_audio(url)
+        # 修复了这里的变量调用，确保使用的是 download_url
+        audio_info = download_audio(download_url)
         if not audio_info[0]:
             raise HTTPException(status_code=400, detail="音频下载失败，可能是反爬或链接无效。")
         mp3_path, title = audio_info
@@ -150,7 +151,7 @@ url: {url}
 {text}
 """
     try:
-        # 回调模型版本，并注入 date, url, text 变量
+        # 回调模型版本为 deepseek-v4-flash，并注入 date, original_url, text 变量
         response = client.chat.completions.create(
             model="deepseek-v4-flash",
             messages=[
