@@ -1,29 +1,40 @@
 import os
+import time
 import requests
 import yt_dlp
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from openai import OpenAI
 from dotenv import load_dotenv
+from google.cloud import storage as gcs_storage
 
 # ================= 1. 初始化配置 =================
 load_dotenv()
-DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
+DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY")  # 百炼 API Key
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME")      # 你现有的 GCS 存储桶
 
-if not DEEPGRAM_API_KEY or not DEEPSEEK_API_KEY:
-    raise RuntimeError("⚠️ 请在环境变量中配置好 API Key！")
+if not DASHSCOPE_API_KEY or not DEEPSEEK_API_KEY or not GCS_BUCKET_NAME:
+    raise RuntimeError("⚠️ 请在环境变量中配置好 DASHSCOPE_API_KEY, DEEPSEEK_API_KEY, GCS_BUCKET_NAME！")
 
 client = OpenAI(
     api_key=DEEPSEEK_API_KEY,
     base_url="https://api.deepseek.com"
 )
 
+# GCS 客户端（Cloud Run 上自动使用服务账号，无需额外配置）
+gcs_client = gcs_storage.Client()
+gcs_bucket = gcs_client.bucket(GCS_BUCKET_NAME)
+
+# 百炼 API 端点（北京，享受便宜价格 + 免费额度）
+# 如果从东京调用不稳定，可换成国际版: https://dashscope-intl.aliyuncs.com/api/v1
+DASHSCOPE_BASE_URL = os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
+
 # 初始化 FastAPI 引擎
 app = FastAPI(title="Wiki API", description="播客/网页双模自动转 Wiki 云端服务")
 
 # ================= 2. 内部音频处理函数 =================
-def download_audio(url: str, output_dir: str = "downloads"):
+def download_audio(url: str, output_dir: str = "/tmp/downloads"):
     """下载音频，返回 (文件路径, 视频标题)"""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -45,28 +56,108 @@ def download_audio(url: str, output_dir: str = "downloads"):
         print(f"❌ 下载失败: {e}")
         return None, None
 
-def transcribe_with_deepgram(audio_path: str) -> str:
-    """调用 Deepgram 转录"""
-    url = "https://api.deepgram.com/v1/listen"
-    params = {"model": "nova-2", "punctuate": "true", "diarize": "true", "language": "zh"}
-    headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "audio/mp3"}
+def upload_audio_to_gcs(audio_path: str) -> str:
+    """上传音频到 GCS 并返回公网 URL（转写完成后会自动删除）"""
+    blob_name = f"temp_audio/{os.path.basename(audio_path)}"
+    blob = gcs_bucket.blob(blob_name)
+    blob.upload_from_filename(audio_path)
+    # 生成 2 小时有效的签名 URL
+    signed_url = blob.generate_signed_url(expiration=7200)
+    print(f"✅ 音频已上传至 GCS: {blob_name}")
+    return signed_url, blob_name
+
+def transcribe_with_funasr(audio_path: str) -> str:
+    """调用百炼 Fun-ASR 录音文件识别（替换 Deepgram）"""
+    
+    # 第一步：上传音频到 GCS，获取公网 URL
+    audio_url, blob_name = upload_audio_to_gcs(audio_path)
+    
+    # 第二步：提交异步转写任务
+    submit_url = f"{DASHSCOPE_BASE_URL}/services/audio/asr/transcription"
+    headers = {
+        "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
+        "Content-Type": "application/json",
+        "X-DashScope-Async": "enable",
+    }
+    payload = {
+        "model": "fun-asr",
+        "input": {"file_urls": [audio_url]},
+        "parameters": {
+            "diarization_enabled": True,
+            "language_hints": ["zh", "en"],
+        }
+    }
+    
     try:
-        with open(audio_path, "rb") as audio_file:
-            response = requests.post(url, params=params, headers=headers, data=audio_file, timeout=600)
-        response.raise_for_status()
-        data = response.json()
-        
-        results = data.get("results", {})
-        utterances = results.get("utterances", [])
-        if utterances:
-            return "".join([f"**Speaker {u.get('speaker', 0)}**: {u.get('transcript', '').strip()}\n\n" for u in utterances])
-            
-        channels = results.get("channels", [])
-        if channels and channels[0].get("alternatives"):
-            return channels[0]["alternatives"][0].get("transcript", "").strip()
-        return ""
+        resp = requests.post(submit_url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        task_id = resp.json()["output"]["task_id"]
+        print(f"✅ 转写任务已提交，task_id: {task_id}")
     except Exception as e:
-        print(f"❌ Deepgram 转录异常: {e}")
+        print(f"❌ 提交转写任务失败: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"详情: {e.response.text}")
+        return ""
+
+    # 第三步：轮询等待结果
+    query_url = f"{DASHSCOPE_BASE_URL}/tasks/{task_id}"
+    query_headers = {"Authorization": f"Bearer {DASHSCOPE_API_KEY}"}
+    
+    print("⏳ 等待 Fun-ASR 转写完成...")
+    result = None
+    for i in range(120):  # 最多等 10 分钟
+        time.sleep(5)
+        try:
+            status_resp = requests.get(query_url, headers=query_headers, timeout=15)
+            status_resp.raise_for_status()
+            result = status_resp.json()
+            task_status = result["output"]["task_status"]
+            
+            if task_status == "SUCCEEDED":
+                print("✅ Fun-ASR 转写完成！")
+                break
+            elif task_status == "FAILED":
+                print(f"❌ 转写失败: {result}")
+                return ""
+            elif i % 6 == 0:
+                print(f"   状态: {task_status}...")
+        except Exception as e:
+            print(f"⚠️ 查询状态异常: {e}")
+    else:
+        print("❌ 转写超时")
+        return ""
+    
+    # 第四步：解析转写结果
+    try:
+        full_text = ""
+        for item in result["output"]["results"]:
+            if item.get("subtask_status") != "SUCCEEDED":
+                continue
+            trans_url = item.get("transcription_url")
+            if not trans_url:
+                continue
+            trans_resp = requests.get(trans_url, timeout=30)
+            trans_data = trans_resp.json()
+            
+            for transcript in trans_data.get("transcripts", []):
+                for sent in transcript.get("sentences", []):
+                    speaker_id = sent.get("speaker_id")
+                    text = sent.get("text", "").strip()
+                    if speaker_id is not None:
+                        full_text += f"**Speaker {speaker_id}**: {text}\n\n"
+                    else:
+                        full_text += f"{text}\n\n"
+        
+        # 清理 GCS 临时文件
+        try:
+            gcs_bucket.blob(blob_name).delete()
+            print("🗑️ GCS 临时音频已清理")
+        except:
+            pass
+        
+        return full_text.strip()
+    except Exception as e:
+        print(f"❌ 解析转写结果失败: {e}")
         return ""
 
 # ================= 3. 对外开放的 API 接口 =================
@@ -90,20 +181,19 @@ def process_podcast_endpoint(req: dict):
         if not download_url:
             raise HTTPException(status_code=400, detail="未提供有效的 URL")
             
-        # 修复了这里的变量调用，确保使用的是 download_url
         audio_info = download_audio(download_url)
         if not audio_info[0]:
             raise HTTPException(status_code=400, detail="音频下载失败，可能是反爬或链接无效。")
         mp3_path, title = audio_info
         
-        print("Deepgram 转录中...")
-        raw_text = transcribe_with_deepgram(mp3_path)
+        print("🧠 Fun-ASR 转录中...")
+        raw_text = transcribe_with_funasr(mp3_path)
         
         if os.path.exists(mp3_path):
             os.remove(mp3_path)
             
         if not raw_text:
-            raise HTTPException(status_code=500, detail="Deepgram 语音转录失败。")
+            raise HTTPException(status_code=500, detail="Fun-ASR 语音转录失败。")
             
     # 重构提炼逻辑：YAML + SCQA (强化A) + 原文
     print("DeepSeek 认知重构中...")
@@ -136,12 +226,12 @@ url: {url}
 要求：
 1. 层层递进地展开讲者或文章给出的核心洞察与结论。
 2. 梳理支撑结论的具体论点、数据案例和重要细节。
-3. 采用清晰的层级列表（带逻辑递进），务必贴近原意。遇到极其精彩的表达，请保留“原话”并用引用语块（>）标识。
+3. 采用清晰的层级列表（带逻辑递进），务必贴近原意。遇到极其精彩的表达，请保留"原话"并用引用语块（>）标识。
 
 ---
 
 ## 📝 深度精炼逐字稿 (原文回放)
-为了方便未来回顾上下文，请对原始文本进行“神级还原”与润色：
+为了方便未来回顾上下文，请对原始文本进行"神级还原"与润色：
 1. 修复所有由于语音转写或网页抓取导致的错别字。
 2. 加上正确的标点符号，做好清晰的段落分割。
 3. 将过于口语化的废话适当精简，但【必须完整保留】干货、核心逻辑以及原始的语气。
@@ -151,7 +241,6 @@ url: {url}
 {text}
 """
     try:
-        # 回调模型版本为 deepseek-v4-flash，并注入 date, original_url, text 变量
         response = client.chat.completions.create(
             model="deepseek-v4-flash",
             messages=[
