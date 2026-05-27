@@ -137,6 +137,115 @@ def transcribe_with_funasr(audio_path: str) -> str:
     
     # 第四步：解析转写结果
     try:
+        full_text = ""
+        for item in result["output"]["results"]:
+            if item.get("subtask_status") != "SUCCEEDED":
+                continue
+            trans_url = item.get("transcription_url")
+            if not trans_url:
+                continue
+            trans_resp = requests.get(trans_url, timeout=30)
+            trans_data = trans_resp.json()
+            
+            for transcript in trans_data.get("transcripts", []):
+                for sent in transcript.get("sentences", []):
+                    speaker_id = sent.get("speaker_id")
+                    text = sent.get("text", "").strip()
+                    if speaker_id is not None:
+                        full_text += f"**Speaker {speaker_id}**: {text}\n\n"
+                    else:
+                        full_text += f"{text}\n\n"
+        
+        # 清理 GCS 临时文件
+        try:
+            get_gcs_bucket().blob(blob_name).delete()
+            print("🗑️ GCS 临时音频已清理")
+        except:
+            pass
+        
+        return full_text.strip()
+    except Exception as e:
+        print(f"❌ 解析转写结果失败: {e}")
+        return ""
+
+# ================= 3. 对外开放的 API 接口 =================
+@app.post("/api/process")
+def process_podcast_endpoint(req: dict):
+    download_url = req.get("url", "")
+    original_url = req.get("original_url") or download_url
+    title = req.get("title", "未命名内容")
+    text = req.get("text", "")
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    
+    print(f"\n🚀 收到手机端请求，开始处理下载链接: {download_url}")
+    
+    if text and len(text.strip()) > 10:
+        print("💡 侦测到前端探针传入的直接文本，跳过音视频下载与转录流程！")
+        raw_text = text
+    else:
+        print("🎵 未检测到直接文本，启动播客下载转录流水线...")
+        if not download_url:
+            raise HTTPException(status_code=400, detail="未提供有效的 URL")
+            
+        audio_info = download_audio(download_url)
+        if not audio_info[0]:
+            raise HTTPException(status_code=400, detail="音频下载失败，可能是反爬或链接无效。")
+        mp3_path, title = audio_info
+        
+        print("🧠 Fun-ASR 转录中...")
+        raw_text = transcribe_with_funasr(mp3_path)
+        
+        if os.path.exists(mp3_path):
+            os.remove(mp3_path)
+            
+        if not raw_text:
+            raise HTTPException(status_code=500, detail="Fun-ASR 语音转录失败。")
+            
+    print("DeepSeek 认知重构中...")
+    
+    PROMPT_TEMPLATE = """你是一个资深的知识库（Wiki）构建专家。请将以下待处理文本，整理为结构极其清晰的 Markdown 笔记。
+
+【必须严格执行的输出结构】：
+
+---
+title: [根据内容生成一个准确且引人注目的标题]
+date: {date}
+tags: 
+  - #内容提取
+  - #[提取2-3个核心领域的标签，例如 #AI应用, #宏观经济 等]
+url: {url}
+---
+
+# 🎙️ [生成的标题]
+
+**来源链接：** [点此访问]({url})
+
+## 💡 核心脉络 (SCQA)
+请用精炼的语言，提取这段内容的逻辑主线：
+* **S (背景)**：讨论的初始场景、行业现状或普遍共识是什么？
+* **C (冲突)**：遇到了什么核心痛点、挑战、变量或反常现象？
+* **Q (问题)**：基于上述冲突，引出的核心探讨问题是什么？
+
+**A (解答与详实论证)**：
+这是本篇笔记的核心。请针对上述问题，给出逻辑清晰、证据详实的论述。
+要求：
+1. 层层递进地展开讲者或文章给出的核心洞察与结论。
+2. 梳理支撑结论的具体论点、数据案例和重要细节。
+3. 采用清晰的层级列表（带逻辑递进），务必贴近原意。遇到极其精彩的表达，请保留"原话"并用引用语块（>）标识。
+
+---
+
+## 📝 深度精炼逐字稿 (原文回放)
+为了方便未来回顾上下文，请对原始文本进行"神级还原"与润色：
+1. 修复所有由于语音转写或网页抓取导致的错别字。
+2. 加上正确的标点符号，做好清晰的段落分割。
+3. 将过于口语化的废话适当精简，但【必须完整保留】干货、核心逻辑以及原始的语气。
+4. 如果明显是对话形式，请尽量区分逻辑段落或发言角色。
+
+以下是待处理文本：
+{text}
+"""
+    try:
         response = client.chat.completions.create(
             model="deepseek-v4-flash",
             messages=[
