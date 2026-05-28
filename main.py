@@ -65,13 +65,26 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
 
 def upload_audio_to_gcs(audio_path: str):
     """上传音频到 GCS 并返回公网 URL"""
+    import google.auth
+    from google.auth.transport import requests as auth_requests
+    from datetime import timedelta
+
     bucket = get_gcs_bucket()
     blob_name = f"temp_audio/{os.path.basename(audio_path)}"
     blob = bucket.blob(blob_name)
     blob.upload_from_filename(audio_path)
-    blob.make_public()
+
+    # 用 IAM 签名生成临时 URL（需要 Service Account Token Creator 角色）
+    credentials, project = google.auth.default()
+    credentials.refresh(auth_requests.Request())
+
+    signed_url = blob.generate_signed_url(
+        expiration=timedelta(hours=2),
+        service_account_email=credentials.service_account_email,
+        access_token=credentials.token,
+    )
     print(f"✅ 音频已上传至 GCS: {blob_name}")
-    return blob.public_url, blob_name
+    return signed_url, blob_name
 
 def transcribe_with_funasr(audio_path: str) -> str:
     """调用百炼 Fun-ASR 录音文件识别（替换 Deepgram）"""
