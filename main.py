@@ -69,10 +69,9 @@ def upload_audio_to_gcs(audio_path: str):
     blob_name = f"temp_audio/{os.path.basename(audio_path)}"
     blob = bucket.blob(blob_name)
     blob.upload_from_filename(audio_path)
-    # 生成 2 小时有效的签名 URL
-    signed_url = blob.generate_signed_url(expiration=7200)
+    blob.make_public()
     print(f"✅ 音频已上传至 GCS: {blob_name}")
-    return signed_url, blob_name
+    return blob.public_url, blob_name
 
 def transcribe_with_funasr(audio_path: str) -> str:
     """调用百炼 Fun-ASR 录音文件识别（替换 Deepgram）"""
