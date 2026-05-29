@@ -52,6 +52,8 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
         'outtmpl': f'{output_dir}/%(title)s_%(id)s.%(ext)s', 
         'quiet': True,
         'no_warnings': True,
+        'retries':5,
+        'socket_timeout':60,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
