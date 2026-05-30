@@ -3,67 +3,60 @@ import time
 import threading
 import requests
 import yt_dlp
-from datetime import datetime, timedelta
-from fastapi import FastAPI, BackgroundTasks
+import oss2
+from datetime import datetime
+from fastapi import FastAPI
 from openai import OpenAI
 from dotenv import load_dotenv
 
 # ================= 1. 初始化配置 =================
 load_dotenv()
-DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY")
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME")
-DASHSCOPE_BASE_URL = os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
+DASHSCOPE_API_KEY     = os.environ.get("DASHSCOPE_API_KEY")
+DEEPSEEK_API_KEY      = os.environ.get("DEEPSEEK_API_KEY")
+OSS_ACCESS_KEY_ID     = os.environ.get("OSS_ACCESS_KEY_ID")
+OSS_ACCESS_KEY_SECRET = os.environ.get("OSS_ACCESS_KEY_SECRET")
+OSS_BUCKET_NAME       = os.environ.get("OSS_BUCKET_NAME", "obsidian-remotely-1121")
+OSS_ENDPOINT          = os.environ.get("OSS_ENDPOINT", "https://oss-cn-hongkong.aliyuncs.com")
+DASHSCOPE_BASE_URL    = os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
 
-missing = [k for k, v in {"DASHSCOPE_API_KEY": DASHSCOPE_API_KEY, "DEEPSEEK_API_KEY": DEEPSEEK_API_KEY, "GCS_BUCKET_NAME": GCS_BUCKET_NAME}.items() if not v]
+missing = [k for k, v in {
+    "DASHSCOPE_API_KEY": DASHSCOPE_API_KEY,
+    "DEEPSEEK_API_KEY": DEEPSEEK_API_KEY,
+    "OSS_ACCESS_KEY_ID": OSS_ACCESS_KEY_ID,
+    "OSS_ACCESS_KEY_SECRET": OSS_ACCESS_KEY_SECRET,
+}.items() if not v]
 if missing:
     print(f"⚠️ 缺少环境变量: {', '.join(missing)}")
 
 client = OpenAI(api_key=DEEPSEEK_API_KEY or "placeholder", base_url="https://api.deepseek.com")
 
-_gcs_bucket = None
-def get_gcs_bucket():
-    global _gcs_bucket
-    if _gcs_bucket is None:
-        from google.cloud import storage as gcs_storage
-        _gcs_bucket = gcs_storage.Client().bucket(GCS_BUCKET_NAME)
-    return _gcs_bucket
+_oss_bucket = None
+def get_oss_bucket():
+    global _oss_bucket
+    if _oss_bucket is None:
+        auth = oss2.Auth(OSS_ACCESS_KEY_ID, OSS_ACCESS_KEY_SECRET)
+        _oss_bucket = oss2.Bucket(auth, OSS_ENDPOINT, OSS_BUCKET_NAME)
+    return _oss_bucket
 
 app = FastAPI(title="Wiki API")
 
-# ================= 2. GCS 工具函数 =================
-def upload_audio_to_gcs(audio_path: str):
-    """上传音频，用 IAM 生成签名 URL"""
-    import google.auth
-    from google.auth.transport import requests as auth_requests
+# ================= 2. OSS 工具函数 =================
+def upload_audio_to_oss(audio_path: str):
+    bucket = get_oss_bucket()
+    oss_key = f"temp_audio/{os.path.basename(audio_path)}"
+    bucket.put_object_from_file(oss_key, audio_path)
+    signed_url = bucket.sign_url('GET', oss_key, 7200)
+    print(f"✅ 音频已上传至 OSS: {oss_key}")
+    return signed_url, oss_key
 
-    bucket = get_gcs_bucket()
-    blob_name = f"temp_audio/{os.path.basename(audio_path)}"
-    blob = bucket.blob(blob_name)
-    blob.upload_from_filename(audio_path)
+def save_markdown_to_oss(content: str, filename: str):
+    get_oss_bucket().put_object(filename, content.encode("utf-8"))
+    print(f"✅ Markdown 已保存至 OSS: {filename}")
 
-    credentials, _ = google.auth.default()
-    credentials.refresh(auth_requests.Request())
-    signed_url = blob.generate_signed_url(
-        expiration=timedelta(hours=2),
-        service_account_email=credentials.service_account_email,
-        access_token=credentials.token,
-    )
-    print(f"✅ 音频已上传至 GCS: {blob_name}")
-    return signed_url, blob_name
-
-def save_markdown_to_gcs(content: str, filename: str):
-    """把 Markdown 存到 GCS，供 Remotely Save 同步到 Obsidian"""
-    bucket = get_gcs_bucket()
-    # 存到根目录，与 Remotely Save 配置的同步路径一致
-    blob = bucket.blob(filename)
-    blob.upload_from_string(content.encode("utf-8"), content_type="text/markdown")
-    print(f"✅ Markdown 已保存至 GCS: {filename}")
-
-def delete_gcs_file(blob_name: str):
+def delete_oss_file(oss_key: str):
     try:
-        get_gcs_bucket().blob(blob_name).delete()
-        print(f"🗑️ GCS 临时文件已清理: {blob_name}")
+        get_oss_bucket().delete_object(oss_key)
+        print(f"🗑️ OSS 临时文件已清理: {oss_key}")
     except:
         pass
 
@@ -91,8 +84,7 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
 
 # ================= 4. Fun-ASR 转写 =================
 def transcribe_with_funasr(audio_path: str) -> str:
-    audio_url, blob_name = upload_audio_to_gcs(audio_path)
-
+    audio_url, oss_key = upload_audio_to_oss(audio_path)
     headers = {
         "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
         "Content-Type": "application/json",
@@ -111,6 +103,7 @@ def transcribe_with_funasr(audio_path: str) -> str:
         print(f"✅ 转写任务已提交: {task_id}")
     except Exception as e:
         print(f"❌ 提交失败: {e}")
+        delete_oss_file(oss_key)
         return ""
 
     query_headers = {"Authorization": f"Bearer {DASHSCOPE_API_KEY}"}
@@ -127,16 +120,18 @@ def transcribe_with_funasr(audio_path: str) -> str:
                 break
             elif status == "FAILED":
                 print(f"❌ 转写失败: {result}")
-                delete_gcs_file(blob_name)
+                delete_oss_file(oss_key)
                 return ""
+            elif i % 6 == 0:
+                print(f"   状态: {status}...")
         except Exception as e:
             print(f"⚠️ 查询异常: {e}")
     else:
         print("❌ 转写超时")
-        delete_gcs_file(blob_name)
+        delete_oss_file(oss_key)
         return ""
 
-    delete_gcs_file(blob_name)
+    delete_oss_file(oss_key)
 
     try:
         full_text = ""
@@ -154,7 +149,7 @@ def transcribe_with_funasr(audio_path: str) -> str:
         print(f"❌ 解析结果失败: {e}")
         return ""
 
-# ================= 5. DeepSeek 润色 =================
+# ================= 5. 后台处理任务 =================
 PROMPT_TEMPLATE = """你是一个资深的知识库（Wiki）构建专家。请将以下待处理文本，整理为结构极其清晰的 Markdown 笔记。
 
 【必须严格执行的输出结构】：
@@ -178,7 +173,7 @@ url: {url}
 * **Q (问题)**：引出的核心探讨问题是什么？
 
 **A (解答与详实论证)**：
-层层递进地展开核心洞察与结论，梳理论点、数据和细节。遇到精彩表达请用引用语块（>）保留原话。
+层层递进展开核心洞察，梳理论点、数据和细节。遇到精彩表达请用引用语块（>）保留原话。
 
 ---
 
@@ -189,27 +184,12 @@ url: {url}
 {text}
 """
 
-def refine_with_deepseek(raw_text: str, original_url: str, current_date: str) -> str:
-    response = client.chat.completions.create(
-        model="deepseek-v4-flash",
-        messages=[
-            {"role": "system", "content": "你是一个极其严谨的结构化知识提取助手。"},
-            {"role": "user", "content": PROMPT_TEMPLATE.format(date=current_date, url=original_url, text=raw_text)}
-        ],
-        temperature=0.3
-    )
-    return response.choices[0].message.content
-
-# ================= 6. 后台处理任务 =================
 def process_in_background(download_url: str, original_url: str, title: str, text: str):
-    """完整处理流程，在后台线程运行"""
     current_date = datetime.now().strftime("%Y-%m-%d")
     print(f"🔄 后台开始处理: {download_url}")
-
     try:
         if text and len(text.strip()) > 10:
             raw_text = text
-            print("💡 使用直接文本")
         else:
             mp3_path, detected_title = download_audio(download_url)
             if not mp3_path:
@@ -217,7 +197,6 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                 return
             if detected_title:
                 title = detected_title
-
             raw_text = transcribe_with_funasr(mp3_path)
             if os.path.exists(mp3_path):
                 os.remove(mp3_path)
@@ -226,20 +205,28 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                 return
 
         print("📝 DeepSeek 润色中...")
-        final_markdown = refine_with_deepseek(raw_text, original_url, current_date)
+        response = client.chat.completions.create(
+            model="deepseek-v4-flash",
+            messages=[
+                {"role": "system", "content": "你是一个极其严谨的结构化知识提取助手。"},
+                {"role": "user", "content": PROMPT_TEMPLATE.format(
+                    date=current_date, url=original_url, text=raw_text)}
+            ],
+            temperature=0.3
+        )
+        final_markdown = response.choices[0].message.content
 
-        # 存到 GCS，Remotely Save 会自动同步到 Obsidian
         safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
         filename = f"{safe_title}_{current_date}.md"
-        save_markdown_to_gcs(final_markdown, filename)
-        print(f"✅ 全部完成！文件已存至 GCS: {filename}")
+        save_markdown_to_oss(final_markdown, filename)
+        print(f"✅ 全部完成！文件: {filename}")
 
     except Exception as e:
         print(f"❌ 后台处理异常: {e}")
         import traceback
         traceback.print_exc()
 
-# ================= 7. API 接口（立即返回） =================
+# ================= 6. API 接口（立即返回） =================
 @app.post("/api/process")
 def process_podcast_endpoint(req: dict):
     download_url = req.get("url", "")
@@ -250,9 +237,7 @@ def process_podcast_endpoint(req: dict):
     if not download_url and not text:
         return {"status": "error", "message": "未提供 URL 或文本"}
 
-    print(f"🚀 收到请求: {download_url}，立即返回，后台处理中...")
-
-    # 用线程在后台处理，不阻塞响应
+    print(f"🚀 收到请求: {download_url}，后台处理中...")
     thread = threading.Thread(
         target=process_in_background,
         args=(download_url, original_url, title, text),
@@ -260,8 +245,7 @@ def process_podcast_endpoint(req: dict):
     )
     thread.start()
 
-    # 立刻返回，快捷指令不会超时
     return {
         "status": "accepted",
-        "message": "✅ 已收到请求，正在后台处理。请在 2-5 分钟后打开 Obsidian 同步即可看到笔记。"
+        "message": "✅ 已收到请求，正在后台处理。请在 2-5 分钟后同步 Obsidian 即可看到笔记。"
     }
