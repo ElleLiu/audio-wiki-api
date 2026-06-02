@@ -72,6 +72,11 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
         'no_warnings': True,
         'retries': 3,
         'socket_timeout': 60,
+        # 加这两行
+        'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+        'Referer': 'https://www.bilibili.com/',
+        },
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
