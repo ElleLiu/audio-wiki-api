@@ -64,6 +64,11 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    # 替换 + 打印验证
+    print(f"🔗 原始 URL: {url}")
+    url = url.replace("m.bilibili.com", "www.bilibili.com")
+    print(f"🔗 处理后 URL: {url}")
+
     # 把移动端 URL 替换成 PC 端
     url = url.replace("m.bilibili.com", "www.bilibili.com")
 
