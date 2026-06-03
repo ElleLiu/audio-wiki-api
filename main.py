@@ -67,6 +67,15 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
     # 从环境变量写入临时 cookie 文件
     cookie_path = "/tmp/bilibili_cookies.txt"
     cookies_content = os.environ.get("BILIBILI_COOKIES", "")
+    # 加这行调试
+    print(f"🍪 Cookie 环境变量长度: {len(cookies_content)}")
+    
+    if cookies_content and not os.path.exists(cookie_path):
+        with open(cookie_path, "w") as f:
+            f.write(cookies_content)
+    
+    # 再加这行
+    print(f"🍪 Cookie 文件存在: {os.path.exists(cookie_path)}")
     if cookies_content and not os.path.exists(cookie_path):
         with open(cookie_path, "w") as f:
             f.write(cookies_content)
