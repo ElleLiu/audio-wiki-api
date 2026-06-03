@@ -60,10 +60,17 @@ def delete_oss_file(oss_key: str):
     except:
         pass
 
-# ================= 3. 音频下载 =================
 def download_audio(url: str, output_dir: str = "/tmp/downloads"):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
+
+    # 从环境变量写入临时 cookie 文件
+    cookie_path = "/tmp/bilibili_cookies.txt"
+    cookies_content = os.environ.get("BILIBILI_COOKIES", "")
+    if cookies_content and not os.path.exists(cookie_path):
+        with open(cookie_path, "w") as f:
+            f.write(cookies_content)
+
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
@@ -72,12 +79,15 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
         'no_warnings': True,
         'retries': 3,
         'socket_timeout': 60,
-        # 加这两行
         'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-        'Referer': 'https://www.bilibili.com/',
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+            'Referer': 'https://www.bilibili.com/',
         },
     }
+    
+    # 如果有 cookie 文件，加上
+    if os.path.exists(cookie_path):
+        ydl_opts['cookiefile'] = cookie_path
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
