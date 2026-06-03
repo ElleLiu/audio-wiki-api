@@ -42,8 +42,14 @@ app = FastAPI(title="Wiki API")
 
 # ================= 2. OSS 工具函数 =================
 def upload_audio_to_oss(audio_path: str):
+    import re
     bucket = get_oss_bucket()
-    oss_key = f"temp_audio/{os.path.basename(audio_path)}"
+    
+    # 清理文件名：只保留字母/数字/中文/常用符号
+    basename = os.path.basename(audio_path)
+    safe_basename = re.sub(r'[｜|<>:"/\\?*]', '_', basename)
+    oss_key = f"temp_audio/{safe_basename}"
+    
     bucket.put_object_from_file(oss_key, audio_path)
     signed_url = bucket.sign_url('GET', oss_key, 7200)
     print(f"✅ 音频已上传至 OSS: {oss_key}")
