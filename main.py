@@ -64,6 +64,9 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    # 把移动端 URL 替换成 PC 端
+    url = url.replace("m.bilibili.com", "www.bilibili.com")
+
     # 从环境变量写入临时 cookie 文件
     cookie_path = "/tmp/bilibili_cookies.txt"
     cookies_content = os.environ.get("BILIBILI_COOKIES", "")
