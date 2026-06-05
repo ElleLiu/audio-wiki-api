@@ -188,7 +188,7 @@ def transcribe_with_funasr(audio_path: str) -> str:
         return ""
 
 # ================= 5. 后台处理任务 =================
-LONG_VIDEO_THRESHOLD = 1200  # 20 分钟，单位秒
+LONG_VIDEO_THRESHOLD = 900  # 15 分钟，单位秒
 
 _PROMPT_BASE = """你是一个资深的知识库（Wiki）构建专家。请将以下待处理文本，整理为结构极其清晰的 Markdown 笔记。
 
@@ -219,16 +219,19 @@ url: {url}
 {text}
 """
 
-# 短内容（≤20分钟）：LLM 同时输出笔记 + 精炼字稿
+# 短内容（≤15分钟）：完整还原逐字稿
 _TRANSCRIPT_SECTION = """---
 
-## 📝 深度精炼逐字稿 (原文回放)
-修复错别字、加标点符号，保留所有实质内容，不得省略或跳段。仅删除语气词（"嗯""啊""就是说"等），不得删减任何观点、案例或数据。对话形式请区分发言角色。
+## 📝 完整逐字稿
+仅修复错别字、补全标点，删除"嗯""啊"等语气词，其余内容一字不差完整输出，不得跳段或省略任何一句话。对话形式请区分发言角色。
 
 """
 
-# 长内容（>20分钟）：LLM 只输出结构化笔记，字稿原文直接追加
-_NO_TRANSCRIPT_SECTION = """---
+# 长内容（>15分钟）：DeepSeek 节选精彩片段与金句
+_HIGHLIGHTS_SECTION = """---
+
+## ✨ 精彩片段与金句
+从原文中节选最有洞见的对话片段和金句，每段保留原话并用引用块（>）呈现，可附一句话说明其价值或上下文。数量不限，宁多勿少，确保覆盖全文精华。
 
 """
 
@@ -256,9 +259,10 @@ def process_in_background(download_url: str, original_url: str, title: str, text
 
         is_long = duration > LONG_VIDEO_THRESHOLD
         if is_long:
-            print(f"⏱️ 长内容（{duration//60} 分钟），字稿将直接追加，不经 LLM 整理")
-            transcript_section = _NO_TRANSCRIPT_SECTION
+            print(f"⏱️ 长内容（{int(duration)//60} 分钟），DeepSeek 将节选精彩片段")
+            transcript_section = _HIGHLIGHTS_SECTION
         else:
+            print(f"⏱️ 短内容（{int(duration)//60} 分钟），完整还原逐字稿")
             transcript_section = _TRANSCRIPT_SECTION
 
         prompt = _PROMPT_BASE.format(
@@ -286,12 +290,8 @@ def process_in_background(download_url: str, original_url: str, title: str, text
         if finish_reason == 'length':
             print("⚠️ 输出被 max_tokens 截断")
 
-        # 长内容：直接追加原始 ASR 字稿
-        if is_long:
-            final_markdown += "\n\n---\n\n## 📝 原始字稿\n\n" + raw_text
-
         safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
-        filename = f"{safe_title}_{current_date}.md"
+        filename = f"{safe_title}.md"
         save_markdown_to_oss(final_markdown, filename)
         print(f"✅ 全部完成！文件: {filename}")
 
