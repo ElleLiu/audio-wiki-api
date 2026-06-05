@@ -172,16 +172,30 @@ def transcribe_with_funasr(audio_path: str) -> str:
     delete_oss_file(oss_key)
 
     try:
-        full_text = ""
+        sentences = []
         for item in result["output"]["results"]:
             if item.get("subtask_status") != "SUCCEEDED":
                 continue
             trans_data = requests.get(item["transcription_url"], timeout=30).json()
             for transcript in trans_data.get("transcripts", []):
                 for sent in transcript.get("sentences", []):
-                    speaker = sent.get("speaker_id")
-                    text = sent.get("text", "").strip()
-                    full_text += f"**Speaker {speaker}**: {text}\n\n" if speaker is not None else f"{text}\n\n"
+                    sentences.append({
+                        "speaker": sent.get("speaker_id"),
+                        "text": sent.get("text", "").strip()
+                    })
+
+        unique_speakers = {s["speaker"] for s in sentences if s["speaker"] is not None}
+        multi_speaker = len(unique_speakers) > 1
+        print(f"🎙️ 识别到 {len(unique_speakers)} 位说话人，{'区分 Speaker 标签' if multi_speaker else '单人，不加标签'}")
+
+        full_text = ""
+        for s in sentences:
+            if not s["text"]:
+                continue
+            if multi_speaker and s["speaker"] is not None:
+                full_text += f"**Speaker {s['speaker']}**: {s['text']}\n\n"
+            else:
+                full_text += f"{s['text']}\n\n"
         return full_text.strip()
     except Exception as e:
         print(f"❌ 解析结果失败: {e}")
