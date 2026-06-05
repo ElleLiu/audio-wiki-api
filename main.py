@@ -70,26 +70,10 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # 替换 + 打印验证
-    print(f"🔗 原始 URL: {url}")
-    url = url.replace("m.bilibili.com", "www.bilibili.com")
-    print(f"🔗 处理后 URL: {url}")
-
-    # 把移动端 URL 替换成 PC 端
     url = url.replace("m.bilibili.com", "www.bilibili.com")
 
-    # 从环境变量写入临时 cookie 文件
     cookie_path = "/tmp/bilibili_cookies.txt"
     cookies_content = os.environ.get("BILIBILI_COOKIES", "")
-    # 加这行调试
-    print(f"🍪 Cookie 环境变量长度: {len(cookies_content)}")
-    
-    if cookies_content and not os.path.exists(cookie_path):
-        with open(cookie_path, "w") as f:
-            f.write(cookies_content)
-    
-    # 再加这行
-    print(f"🍪 Cookie 文件存在: {os.path.exists(cookie_path)}")
     if cookies_content and not os.path.exists(cookie_path):
         with open(cookie_path, "w") as f:
             f.write(cookies_content)
@@ -115,10 +99,15 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             mp3_path = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
-            return mp3_path, info.get('title', 'Unknown')
+            upload_date = info.get('upload_date', '')
+            if upload_date and len(upload_date) == 8:
+                publish_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+            else:
+                publish_date = datetime.now().strftime("%Y-%m-%d")
+            return mp3_path, info.get('title', 'Unknown'), publish_date
     except Exception as e:
         print(f"❌ 下载失败: {e}")
-        return None, None
+        return None, None, datetime.now().strftime("%Y-%m-%d")
 
 # ================= 4. Fun-ASR 转写 =================
 def transcribe_with_funasr(audio_path: str) -> str:
@@ -195,9 +184,8 @@ PROMPT_TEMPLATE = """你是一个资深的知识库（Wiki）构建专家。请�
 ---
 title: [根据内容生成一个准确且引人注目的标题]
 date: {date}
-tags: 
-  - #内容提取
-  - #[提取2-3个核心领域的标签]
+tags:
+  - #[根据内容生成2-4个核心领域标签，格式为 #标签名]
 url: {url}
 ---
 
@@ -224,12 +212,13 @@ url: {url}
 
 def process_in_background(download_url: str, original_url: str, title: str, text: str):
     current_date = datetime.now().strftime("%Y-%m-%d")
+    publish_date = current_date
     print(f"🔄 后台开始处理: {download_url}")
     try:
         if text and len(text.strip()) > 10:
             raw_text = text
         else:
-            mp3_path, detected_title = download_audio(download_url)
+            mp3_path, detected_title, publish_date = download_audio(download_url)
             if not mp3_path:
                 print("❌ 下载失败，任务终止")
                 return
@@ -248,9 +237,10 @@ def process_in_background(download_url: str, original_url: str, title: str, text
             messages=[
                 {"role": "system", "content": "你是一个极其严谨的结构化知识提取助手。"},
                 {"role": "user", "content": PROMPT_TEMPLATE.format(
-                    date=current_date, url=original_url, text=raw_text)}
+                    date=publish_date, url=original_url, text=raw_text)}
             ],
-            temperature=0.3
+            temperature=0.3,
+            max_tokens=8192
         )
         final_markdown = response.choices[0].message.content
 
