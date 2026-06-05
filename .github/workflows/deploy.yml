@@ -47,6 +47,6 @@ jobs:
           aliyun fc UpdateFunction \
             --region cn-hongkong \
             --functionName audio-wiki-api \
-            --customContainerConfig "{\"image\":\"$IMAGE\"}"
+            --body "{\"customContainerConfig\":{\"image\":\"$IMAGE\"}}"
 
           echo "✅ FC 已更新到镜像: $IMAGE"
