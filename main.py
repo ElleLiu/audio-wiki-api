@@ -104,10 +104,11 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
                 publish_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
             else:
                 publish_date = datetime.now().strftime("%Y-%m-%d")
-            return mp3_path, info.get('title', 'Unknown'), publish_date
+            duration = info.get('duration', 0) or 0
+            return mp3_path, info.get('title', 'Unknown'), publish_date, duration
     except Exception as e:
         print(f"❌ 下载失败: {e}")
-        return None, None, datetime.now().strftime("%Y-%m-%d")
+        return None, None, datetime.now().strftime("%Y-%m-%d"), 0
 
 # ================= 4. Fun-ASR 转写 =================
 def transcribe_with_funasr(audio_path: str) -> str:
@@ -177,7 +178,9 @@ def transcribe_with_funasr(audio_path: str) -> str:
         return ""
 
 # ================= 5. 后台处理任务 =================
-PROMPT_TEMPLATE = """你是一个资深的知识库（Wiki）构建专家。请将以下待处理文本，整理为结构极其清晰的 Markdown 笔记。
+LONG_VIDEO_THRESHOLD = 1200  # 20 分钟，单位秒
+
+_PROMPT_BASE = """你是一个资深的知识库（Wiki）构建专家。请将以下待处理文本，整理为结构极其清晰的 Markdown 笔记。
 
 【必须严格执行的输出结构】：
 
@@ -201,24 +204,34 @@ url: {url}
 **A (解答与详实论证)**：
 层层递进展开核心洞察，梳理论点、数据和细节。遇到精彩表达请用引用语块（>）保留原话。
 
----
-
-## 📝 深度精炼逐字稿 (原文回放)
-修复错别字，加标点，精简废话但完整保留干货。对话形式请区分发言角色。
-
+{transcript_section}
 以下是待处理文本：
 {text}
+"""
+
+# 短内容（≤20分钟）：LLM 同时输出笔记 + 精炼字稿
+_TRANSCRIPT_SECTION = """---
+
+## 📝 深度精炼逐字稿 (原文回放)
+修复错别字、加标点符号，保留所有实质内容，不得省略或跳段。仅删除语气词（"嗯""啊""就是说"等），不得删减任何观点、案例或数据。对话形式请区分发言角色。
+
+"""
+
+# 长内容（>20分钟）：LLM 只输出结构化笔记，字稿原文直接追加
+_NO_TRANSCRIPT_SECTION = """---
+
 """
 
 def process_in_background(download_url: str, original_url: str, title: str, text: str):
     current_date = datetime.now().strftime("%Y-%m-%d")
     publish_date = current_date
+    duration = 0
     print(f"🔄 后台开始处理: {download_url}")
     try:
         if text and len(text.strip()) > 10:
             raw_text = text
         else:
-            mp3_path, detected_title, publish_date = download_audio(download_url)
+            mp3_path, detected_title, publish_date, duration = download_audio(download_url)
             if not mp3_path:
                 print("❌ 下载失败，任务终止")
                 return
@@ -231,18 +244,41 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                 print("❌ 转写失败，任务终止")
                 return
 
+        is_long = duration > LONG_VIDEO_THRESHOLD
+        if is_long:
+            print(f"⏱️ 长内容（{duration//60} 分钟），字稿将直接追加，不经 LLM 整理")
+            transcript_section = _NO_TRANSCRIPT_SECTION
+        else:
+            transcript_section = _TRANSCRIPT_SECTION
+
+        prompt = _PROMPT_BASE.format(
+            date=publish_date, url=original_url,
+            transcript_section=transcript_section, text=raw_text
+        )
+
         print("📝 DeepSeek 润色中...")
         response = client.chat.completions.create(
             model="deepseek-v4-flash",
             messages=[
-                {"role": "system", "content": "你是一个极其严谨的结构化知识提取助手。"},
-                {"role": "user", "content": PROMPT_TEMPLATE.format(
-                    date=publish_date, url=original_url, text=raw_text)}
+                {"role": "system", "content": "你是一个极其严谨的结构化知识提取助手。直接输出Markdown内容，第一行必须是 ---，禁止在frontmatter之前输出任何说明、问候或解释性文字。"},
+                {"role": "user", "content": prompt}
             ],
             temperature=0.3,
             max_tokens=8192
         )
         final_markdown = response.choices[0].message.content
+
+        # 裁掉 frontmatter 之前的任何废话
+        if '---' in final_markdown:
+            final_markdown = final_markdown[final_markdown.index('---'):]
+
+        finish_reason = response.choices[0].finish_reason
+        if finish_reason == 'length':
+            print("⚠️ 输出被 max_tokens 截断")
+
+        # 长内容：直接追加原始 ASR 字稿
+        if is_long:
+            final_markdown += "\n\n---\n\n## 📝 原始字稿\n\n" + raw_text
 
         safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
         filename = f"{safe_title}_{current_date}.md"
