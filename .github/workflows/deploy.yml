@@ -1,0 +1,52 @@
+name: Build and Deploy to FC
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: crpi-9kg6vtzvh3awqysx.cn-hongkong.personal.cr.aliyuncs.com
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build and push image
+        run: |
+          IMAGE=crpi-9kg6vtzvh3awqysx.cn-hongkong.personal.cr.aliyuncs.com/elle-apps/audio-wiki-api
+          docker build -t $IMAGE:latest -t $IMAGE:${{ github.sha }} .
+          docker push $IMAGE:latest
+          docker push $IMAGE:${{ github.sha }}
+
+      - name: Install Aliyun CLI
+        run: |
+          curl -sSL https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-amd64.tgz -o aliyun-cli.tgz
+          tar xzf aliyun-cli.tgz
+          sudo mv aliyun /usr/local/bin/aliyun
+          aliyun plugin install --name aliyun-cli-fc
+
+      - name: Deploy to FC
+        env:
+          ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+        run: |
+          aliyun configure set \
+            --access-key-id "$ALIYUN_ACCESS_KEY_ID" \
+            --access-key-secret "$ALIYUN_ACCESS_KEY_SECRET" \
+            --region cn-hongkong
+
+          # 用带 git SHA 的镜像 tag 更新 FC，确保 FC 感知到镜像变更
+          IMAGE=crpi-9kg6vtzvh3awqysx-vpc.cn-hongkong.personal.cr.aliyuncs.com/elle-apps/audio-wiki-api:${{ github.sha }}
+          aliyun fc UpdateFunction \
+            --region cn-hongkong \
+            --functionName audio-wiki-api \
+            --customContainerConfig "{\"image\":\"$IMAGE\"}"
+
+          echo "✅ FC 已更新到镜像: $IMAGE"
