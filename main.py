@@ -105,6 +105,16 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
             else:
                 publish_date = datetime.now().strftime("%Y-%m-%d")
             duration = info.get('duration', 0) or 0
+            # yt-dlp 有时返回 0，用 ffprobe 从文件本身读取时长兜底
+            if not duration and os.path.exists(mp3_path):
+                import subprocess, json as _json
+                r = subprocess.run(
+                    ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', mp3_path],
+                    capture_output=True, text=True
+                )
+                if r.returncode == 0:
+                    duration = float(_json.loads(r.stdout).get('format', {}).get('duration', 0))
+            print(f"⏱️ 音频时长: {int(duration)//60} 分 {int(duration)%60} 秒")
             return mp3_path, info.get('title', 'Unknown'), publish_date, duration
     except Exception as e:
         print(f"❌ 下载失败: {e}")
