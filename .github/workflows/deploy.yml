@@ -42,11 +42,12 @@ jobs:
             --access-key-secret "$ALIYUN_ACCESS_KEY_SECRET" \
             --region cn-hongkong
 
-          # 用带 git SHA 的镜像 tag 更新 FC，确保 FC 感知到镜像变更
-          IMAGE=crpi-9kg6vtzvh3awqysx-vpc.cn-hongkong.personal.cr.aliyuncs.com/elle-apps/audio-wiki-api:${{ github.sha }}
+          # 用 latest tag + DEPLOY_TIME 环境变量触发 FC 拉取新镜像
+          IMAGE=crpi-9kg6vtzvh3awqysx-vpc.cn-hongkong.personal.cr.aliyuncs.com/elle-apps/audio-wiki-api:latest
+          DEPLOY_TIME=$(date -u +%Y%m%dT%H%M%SZ)
           aliyun fc UpdateFunction \
             --region cn-hongkong \
             --functionName audio-wiki-api \
-            --body "{\"customContainerConfig\":{\"image\":\"$IMAGE\"}}"
+            --body "{\"customContainerConfig\":{\"image\":\"$IMAGE\"},\"environmentVariables\":{\"DEPLOY_TIME\":\"$DEPLOY_TIME\"}}"
 
-          echo "✅ FC 已更新到镜像: $IMAGE"
+          echo "✅ FC 已更新，DEPLOY_TIME=$DEPLOY_TIME"
