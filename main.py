@@ -212,9 +212,12 @@ _PROMPT_BASE = """你是一个资深的知识库（Wiki）构建专家。请将�
 title: [根据内容生成一个准确且引人注目的标题]
 date: {date}
 tags:
-  - #[根据内容生成2-4个核心领域标签，格式为 #标签名]
+  - [标签1，如：AI、投资、创业、健康]
+  - [标签2]
+  - [标签3，如有必要]
 url: {url}
 ---
+注意：tags 每个标签单独一行，直接写标签名，不加 # 前缀，根据内容提炼 2-4 个。
 
 # 🎙️ [生成的标题]
 
@@ -321,9 +324,22 @@ def process_podcast_endpoint(req: dict):
     original_url = req.get("original_url") or download_url
     title = req.get("title", "未命名内容")
     text = req.get("text", "")
+    raw = req.get("raw", False)
 
     if not download_url and not text:
         return {"status": "error", "message": "未提供 URL 或文本"}
+
+    # raw 模式：跳过 DeepSeek，直接把文本包一层 frontmatter 存 OSS
+    if raw and text:
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip() or "未命名内容"
+        markdown = f"---\ntitle: {safe_title}\ndate: {current_date}\n---\n\n{text}"
+        try:
+            save_markdown_to_oss(markdown, f"{safe_title}.md")
+            print(f"✅ 纯文本直接保存完成: {safe_title}.md")
+            return {"status": "ok", "message": f"✅ 已保存：{safe_title}.md"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     print(f"🚀 收到请求: {download_url}，后台处理中...")
     thread = threading.Thread(
