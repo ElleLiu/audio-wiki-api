@@ -122,30 +122,39 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
         return None, None, datetime.now().strftime("%Y-%m-%d"), 0
 
 # ================= 4. 网页正文抓取 =================
+_LOGIN_WALL_KEYWORDS = ["请登录", "登录后查看", "注册知乎", "登录知乎", "sign in", "log in to view"]
+
 def fetch_webpage_text(url: str) -> tuple[str, str]:
     """返回 (正文文本, 页面标题)，失败返回 ('', '')"""
     import trafilatura
+    is_zhihu = "zhihu.com" in url
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "zh-CN,zh;q=0.9",
-        "Referer": "https://www.zhihu.com/",
+        "Referer": "https://www.zhihu.com/" if is_zhihu else url,
     }
-    if "zhihu.com" in url and ZHIHU_COOKIE:
+    if is_zhihu and ZHIHU_COOKIE:
         headers["Cookie"] = ZHIHU_COOKIE
         print("🍪 携带知乎 Cookie 抓取")
+    elif is_zhihu:
+        print("⚠️ 知乎请求未携带 Cookie（ZHIHU_COOKIE 未设置），可能触发登录墙")
     try:
         resp = requests.get(url, headers=headers, timeout=20)
+        print(f"🌐 HTTP {resp.status_code}，原始 HTML 长度: {len(resp.text)} 字符")
         resp.raise_for_status()
         text = trafilatura.extract(resp.text, include_comments=False, include_tables=True, include_images=True, output_format="markdown")
         meta = trafilatura.extract_metadata(resp.text)
         page_title = (meta.title if meta and meta.title else "") or ""
-        if text:
-            print(f"✅ 网页正文抓取成功，长度: {len(text)} 字")
-            return text, page_title
-        print("⚠️ trafilatura 未能提取正文")
-        return "", ""
+        if not text:
+            print("⚠️ trafilatura 未能提取正文（页面可能需要登录或动态渲染）")
+            return "", ""
+        if len(text) < 200 and any(kw in text.lower() for kw in _LOGIN_WALL_KEYWORDS):
+            print(f"🚫 检测到登录墙，提取内容仅 {len(text)} 字。请配置 ZHIHU_COOKIE 环境变量")
+            return "", ""
+        print(f"✅ 网页正文抓取成功，标题: {page_title!r}，正文长度: {len(text)} 字")
+        return text, page_title
     except Exception as e:
-        print(f"❌ 网页抓取失败: {e}")
+        print(f"❌ 网页抓取失败: {type(e).__name__}: {e}")
         return "", ""
 
 # ================= 5. Fun-ASR 转写 =================
@@ -280,10 +289,19 @@ _HIGHLIGHTS_SECTION = """---
 
 """
 
+# 网页文章：完整保留原文正文
+_WEBPAGE_SECTION = """---
+
+## 📄 完整原文
+完整保留原文内容，仅修复明显错别字和排版问题，不得删减、跳段或改写任何句子。保持原作者的表达风格和结构。
+
+"""
+
 def process_in_background(download_url: str, original_url: str, title: str, text: str):
     current_date = datetime.now().strftime("%Y-%m-%d")
     publish_date = current_date
     duration = 0
+    is_webpage = False
     print(f"🔄 后台开始处理: {download_url}")
     try:
         if text and len(text.strip()) > 10:
@@ -296,6 +314,7 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                 if not raw_text:
                     print("❌ 网页抓取也失败，任务终止")
                     return
+                is_webpage = True
                 if page_title and not detected_title:
                     title = page_title
             else:
@@ -308,8 +327,10 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                     print("❌ 转写失败，任务终止")
                     return
 
-        is_long = duration > LONG_VIDEO_THRESHOLD
-        if is_long:
+        if is_webpage:
+            print("📰 网页文章模式，保留完整原文")
+            transcript_section = _WEBPAGE_SECTION
+        elif duration > LONG_VIDEO_THRESHOLD:
             print(f"⏱️ 长内容（{int(duration)//60} 分钟），DeepSeek 将节选精彩片段")
             transcript_section = _HIGHLIGHTS_SECTION
         else:

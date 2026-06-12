@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
 
+env:
+  REGISTRY: crpi-9kg6vtzvh3awqysx.cn-hongkong.personal.cr.aliyuncs.com
+  REGISTRY_VPC: crpi-9kg6vtzvh3awqysx-vpc.cn-hongkong.personal.cr.aliyuncs.com
+  NAMESPACE: apps
+  IMAGE_NAME: audio-wiki-api
+  FC_REGION: cn-hongkong
+  FC_FUNCTION: audio-wiki-api
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -11,28 +19,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Login to ACR
+      - name: 登录 ACR
         uses: docker/login-action@v3
         with:
-          registry: crpi-9kg6vtzvh3awqysx.cn-hongkong.personal.cr.aliyuncs.com
+          registry: ${{ env.REGISTRY }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Build and push image
+      - name: 构建并推送镜像
         run: |
-          IMAGE=crpi-9kg6vtzvh3awqysx.cn-hongkong.personal.cr.aliyuncs.com/elle-apps/audio-wiki-api
+          IMAGE=$REGISTRY/$NAMESPACE/$IMAGE_NAME
           docker build -t $IMAGE:latest -t $IMAGE:${{ github.sha }} .
           docker push $IMAGE:latest
           docker push $IMAGE:${{ github.sha }}
 
-      - name: Install Aliyun CLI
+      - name: 安装阿里云 CLI
         run: |
           curl -sSL https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-amd64.tgz -o aliyun-cli.tgz
           tar xzf aliyun-cli.tgz
           sudo mv aliyun /usr/local/bin/aliyun
-          aliyun plugin install --name aliyun-cli-fc
 
-      - name: Deploy to FC
+      - name: 更新 FC 函数镜像
         env:
           ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
           ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
@@ -40,13 +47,12 @@ jobs:
           aliyun configure set \
             --access-key-id "$ALIYUN_ACCESS_KEY_ID" \
             --access-key-secret "$ALIYUN_ACCESS_KEY_SECRET" \
-            --region cn-hongkong
+            --region $FC_REGION
 
-          # 用 commit SHA 标签，强制 FC 拉取新镜像
-          IMAGE=crpi-9kg6vtzvh3awqysx-vpc.cn-hongkong.personal.cr.aliyuncs.com/elle-apps/audio-wiki-api:${{ github.sha }}
+          IMAGE_VPC=$REGISTRY_VPC/$NAMESPACE/$IMAGE_NAME:${{ github.sha }}
           aliyun fc UpdateFunction \
-            --region cn-hongkong \
-            --functionName audio-wiki-api \
-            --body "{\"customContainerConfig\":{\"image\":\"$IMAGE\"}}"
+            --region $FC_REGION \
+            --functionName $FC_FUNCTION \
+            --body "{\"customContainerConfig\":{\"image\":\"$IMAGE_VPC\"}}"
 
-          echo "✅ FC 已更新到镜像: $IMAGE"
+          echo "✅ FC 已更新到镜像: $IMAGE_VPC"

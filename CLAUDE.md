@@ -13,7 +13,7 @@
 - **ASR**：阿里云百炼 Fun-ASR（Paraformer-zh + FSMN-VAD + CAM++ + CT-Punc）
 - **LLM 润色**：DeepSeek（`deepseek-v4-flash`）
 - **同步**：Obsidian + Remotely Save 插件 → OSS（S3 兼容协议）
-- **镜像构建**：GitHub → ACR 自动触发
+- **CI/CD**：GitHub Actions（push main → 构建镜像推ACR → 自动更新FC）
 
 ## 仓库地址
 
@@ -118,40 +118,31 @@ ydl_opts = {
 
 ## 待解决问题（按优先级）
 
-### P0：长视频内容被截断
+### P0：长视频内容被截断 ✅ 已修复
 
-**症状**：长视频的 Markdown 笔记只还原了部分原文。
+`max_tokens=8192` 已加入 DeepSeek 调用，有 `finish_reason == 'length'` 截断检测日志。
 
-**最可能原因**：DeepSeek 输出 token 上限默认值太低。
+### P1：tags AI 自动生成 + 日期用作品发布日期 ✅ 已修复
 
-**修复**：在 `process_in_background` 的 `client.chat.completions.create` 调用里加 `max_tokens=8192`（或更大）。
-
-**验证**：去 FC 日志里看 `raw_text` 长度，确认 Fun-ASR 转写本身是完整的，再判断是 ASR 截断还是 LLM 截断。
-
-### P1：Markdown tags 改为 AI 自动生成 + 日期改为作品发布日期
-
-**修改点 1**：`PROMPT_TEMPLATE` 里 tags 部分改成让 LLM 根据内容生成，不再硬编码 `#内容提取`。
-
-**修改点 2**：从 yt-dlp 的 `info` 中提取 `upload_date`（格式 `YYYYMMDD`），转成 `YYYY-MM-DD` 后传给 prompt 的 `{date}` 字段：
-
-```python
-upload_date = info.get('upload_date', '')
-if upload_date and len(upload_date) == 8:
-    publish_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
-else:
-    publish_date = datetime.now().strftime("%Y-%m-%d")
-```
-
-**修改点 3**：`download_audio` 返回值从 `(mp3_path, title)` 改为 `(mp3_path, title, publish_date)`，`process_in_background` 接收并传给 prompt。
+tags 由 LLM 根据内容生成；`download_audio` 从 yt-dlp `upload_date` 提取发布日期传入 prompt。
 
 ### P2：抖音视频下载失败
 
 **待获取**：具体的 FC 日志报错信息。
 
-**预判**：
-- 抖音短链 `v.douyin.com/xxx` 可能需要先手动跟随重定向
-- 可能需要抖音 cookie（和 B站同样的方案）
-- yt-dlp 对抖音支持有限，可能需要升级到最新版本
+**预判**：抖音短链可能需要 cookie，或需升级 yt-dlp。
+
+### P3：知乎链接抓取失败 ✅ 已改进诊断
+
+**原因**：yt-dlp 不处理知乎（预期），fallback 到网页抓取；无 Cookie 时触发登录墙。
+
+**已做的改进**：
+- `fetch_webpage_text` 新增 `🌐 HTTP 状态码 + HTML 长度` 日志，方便判断是被拦截还是空内容
+- 未设置 `ZHIHU_COOKIE` 时打印明确警告
+- 内容 <200 字且含登录关键词时打印 `🚫 检测到登录墙` 并终止
+- `process_in_background` 新增 `is_webpage` 标志，网页来源使用 `_WEBPAGE_SECTION`（完整原文），不再误用音频逐字稿分区
+
+**如仍失败**：在 FC 环境变量里配置 `ZHIHU_COOKIE`（从浏览器导出知乎登录态 Cookie）。
 
 ## 环境变量清单
 
@@ -167,6 +158,7 @@ FC 函数当前需要的环境变量：
 | `OSS_ENDPOINT` | 默认 `https://oss-cn-hongkong.aliyuncs.com` |
 | `DASHSCOPE_BASE_URL` | 默认 `https://dashscope.aliyuncs.com/api/v1` |
 | `BILIBILI_COOKIES` | Netscape 格式的 cookie 文件全文，从浏览器插件导出 |
+| `ZHIHU_COOKIE` | 知乎登录态 Cookie 字符串（可选，未设置时知乎内容可能触发登录墙）|
 
 ## 安全事项
 
@@ -174,12 +166,24 @@ FC 函数当前需要的环境变量：
 - **BILIBILI_COOKIES 含登录态**，泄露等于账号被盗，注意不要 commit 到 GitHub
 - FC HTTP 触发器是公网可访问的，会持续被网络扫描（GET /、GET /favicon.ico 等），返回 404 是正常背景噪音，不是攻击
 
-## 部署流程
+## 部署流程（全自动）
 
-1. 改代码 → `git push` 到 GitHub
-2. ACR 自动触发构建（在 ACR 控制台看构建日志）
-3. **FC 必须手动重新部署**才会用新镜像（ACR 构建成功 ≠ FC 自动更新）
-4. 测试时去 FC → 函数详情 → 日志查询，看最新一次调用的完整日志
+1. 改代码 → `git push origin main`
+2. GitHub Actions 自动触发（`.github/workflows/deploy.yml`）：
+   - 构建 Docker 镜像，推送到 ACR（同时打 `latest` 和 commit SHA 两个 tag）
+   - 调用阿里云 CLI 更新 FC 函数到新镜像
+3. 约 3-5 分钟后 FC 自动使用新镜像，无需手动操作
+
+**⚠️ ACR 代码源需禁用**：进 ACR 控制台 → 镜像仓库 → 构建 → 关闭"代码源"自动构建，避免与 GitHub Actions 双重构建冲突。
+
+**GitHub Secrets 需配置**（仓库 Settings → Secrets and variables → Actions）：
+
+| Secret 名 | 值 |
+|-----------|-----|
+| `ACR_USERNAME` | 阿里云账号用户名（ACR 访问凭证里的登录名）|
+| `ACR_PASSWORD` | ACR 访问凭证密码（在 ACR 控制台 → 访问凭证 里设置）|
+| `ALIYUN_ACCESS_KEY_ID` | RAM 用户 AccessKey ID |
+| `ALIYUN_ACCESS_KEY_SECRET` | RAM 用户 AccessKey Secret |
 
 ## 调试技巧
 
