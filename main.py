@@ -124,6 +124,18 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
 # ================= 4. 网页正文抓取 =================
 _LOGIN_WALL_KEYWORDS = ["请登录", "登录后查看", "注册知乎", "登录知乎", "sign in", "log in to view"]
 
+def _parse_cookie_header(cookie_str: str) -> str:
+    """Netscape 格式 cookie 文件 → HTTP Cookie 请求头字符串（name=value; ...）"""
+    cookies = []
+    for line in cookie_str.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split('\t')
+        if len(parts) >= 7:
+            cookies.append(f"{parts[5]}={parts[6]}")
+    return '; '.join(cookies)
+
 def fetch_webpage_text(url: str) -> tuple[str, str]:
     """返回 (正文文本, 页面标题)，失败返回 ('', '')"""
     import trafilatura
@@ -134,7 +146,7 @@ def fetch_webpage_text(url: str) -> tuple[str, str]:
         "Referer": "https://www.zhihu.com/" if is_zhihu else url,
     }
     if is_zhihu and ZHIHU_COOKIE:
-        headers["Cookie"] = ZHIHU_COOKIE
+        headers["Cookie"] = _parse_cookie_header(ZHIHU_COOKIE)
         print("🍪 携带知乎 Cookie 抓取")
     elif is_zhihu:
         print("⚠️ 知乎请求未携带 Cookie（ZHIHU_COOKIE 未设置），可能触发登录墙")
