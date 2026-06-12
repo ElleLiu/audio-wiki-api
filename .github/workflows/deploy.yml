@@ -42,8 +42,8 @@ jobs:
             --access-key-secret "$ALIYUN_ACCESS_KEY_SECRET" \
             --region cn-hongkong
 
-          # 只更新镜像，不触碰环境变量
-          IMAGE=crpi-9kg6vtzvh3awqysx-vpc.cn-hongkong.personal.cr.aliyuncs.com/elle-apps/audio-wiki-api:latest
+          # 用 commit SHA 标签，强制 FC 拉取新镜像
+          IMAGE=crpi-9kg6vtzvh3awqysx-vpc.cn-hongkong.personal.cr.aliyuncs.com/elle-apps/audio-wiki-api:${{ github.sha }}
           aliyun fc UpdateFunction \
             --region cn-hongkong \
             --functionName audio-wiki-api \
