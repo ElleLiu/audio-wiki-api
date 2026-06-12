@@ -125,16 +125,24 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
 _LOGIN_WALL_KEYWORDS = ["请登录", "登录后查看", "注册知乎", "登录知乎", "sign in", "log in to view"]
 
 def _parse_cookie_header(cookie_str: str) -> str:
-    """Netscape 格式 cookie 文件 → HTTP Cookie 请求头字符串（name=value; ...）"""
-    cookies = []
-    for line in cookie_str.splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        parts = line.split('\t')
-        if len(parts) >= 7:
-            cookies.append(f"{parts[5]}={parts[6]}")
-    return '; '.join(cookies)
+    """Cookie 字符串 → HTTP Cookie 请求头。
+    支持两种格式：
+    1. 浏览器开发者工具复制的 key=value; key2=value2
+    2. Netscape 格式（浏览器插件导出的 .txt 文件，tab 分隔）
+    """
+    # Netscape 格式：每行 7 个 tab 分隔字段
+    if '\t' in cookie_str:
+        cookies = []
+        for line in cookie_str.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split('\t')
+            if len(parts) >= 7:
+                cookies.append(f"{parts[5]}={parts[6]}")
+        return '; '.join(cookies)
+    # 直接是 key=value; key2=value2 格式，原样使用
+    return cookie_str.strip()
 
 def fetch_webpage_text(url: str) -> tuple[str, str]:
     """返回 (正文文本, 页面标题)，失败返回 ('', '')"""
