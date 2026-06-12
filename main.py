@@ -136,7 +136,7 @@ def fetch_webpage_text(url: str) -> tuple[str, str]:
     try:
         resp = requests.get(url, headers=headers, timeout=20)
         resp.raise_for_status()
-        text = trafilatura.extract(resp.text, include_comments=False, include_tables=True)
+        text = trafilatura.extract(resp.text, include_comments=False, include_tables=True, include_images=True, output_format="markdown")
         meta = trafilatura.extract_metadata(resp.text)
         page_title = (meta.title if meta and meta.title else "") or ""
         if text:
