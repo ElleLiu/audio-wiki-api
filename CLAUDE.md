@@ -116,33 +116,47 @@ ydl_opts = {
 
 **解决**：设置里调高允许变更比例（如 80%）。建议把 `temp_audio/` 路径加入 Remotely Save 排除列表，防止临时音频污染 vault。
 
-## 待解决问题（按优先级）
+## 已解决问题（续）
 
-### P0：长视频内容被截断 ✅ 已修复
+### 8. DeepSeek 输出开头有废话导致 frontmatter 失效
 
-`max_tokens=8192` 已加入 DeepSeek 调用，有 `finish_reason == 'length'` 截断检测日志。
+**症状**：笔记属性（title/date/tags）在 Obsidian 中显示为普通文本而非 YAML frontmatter。
 
-### P1：tags AI 自动生成 + 日期用作品发布日期 ✅ 已修复
+**原因**：DeepSeek 在 `---` 之前输出"好的，作为…"之类的说明文字，导致 Obsidian 无法识别 frontmatter。
 
-tags 由 LLM 根据内容生成；`download_audio` 从 yt-dlp `upload_date` 提取发布日期传入 prompt。
+**解决**：
+1. system prompt 明确禁止前置文字："第一行必须是 ---"
+2. 代码里后处理裁掉第一个 `---` 之前的所有内容
 
-### P2：抖音视频下载失败
+### 9. 长音频字稿截断 + 按时长分路处理
+
+**策略**（阈值 15 分钟 = 900 秒）：
+- **≤15 分钟**：LLM 完整还原逐字稿（仅修标点/错别字）
+- **>15 分钟**：LLM 只做结构化笔记 + 节选精彩片段与金句
+
+**时长获取**：yt-dlp `info['duration']` 为 0 时用 `ffprobe` 从文件读取兜底。日志会打印 `⏱️ 音频时长: XX 分 XX 秒`。
+
+### 10. 单人音频误加 Speaker 标签
+
+**解决**：先统计唯一说话人数量，只有 >1 人时才加 `**Speaker X**:` 标签。
+
+### 11. GitHub Actions 更新 FC 时意外清空环境变量
+
+**原因**：`aliyun fc UpdateFunction --body` 里带了 `environmentVariables` 字段，FC 会用该字段**完全替换**原有的所有环境变量。
+
+**解决**：`--body` 只传 `customContainerConfig`，不要包含 `environmentVariables`。如果需要更新环境变量，必须先 GetFunction 获取全量再合并。
+
+## 待解决问题
+
+### P1：抖音视频下载失败
 
 **待获取**：具体的 FC 日志报错信息。
 
 **预判**：抖音短链可能需要 cookie，或需升级 yt-dlp。
 
-### P3：知乎链接抓取失败 ✅ 已改进诊断
+### P2：知乎登录墙
 
-**原因**：yt-dlp 不处理知乎（预期），fallback 到网页抓取；无 Cookie 时触发登录墙。
-
-**已做的改进**：
-- `fetch_webpage_text` 新增 `🌐 HTTP 状态码 + HTML 长度` 日志，方便判断是被拦截还是空内容
-- 未设置 `ZHIHU_COOKIE` 时打印明确警告
-- 内容 <200 字且含登录关键词时打印 `🚫 检测到登录墙` 并终止
-- `process_in_background` 新增 `is_webpage` 标志，网页来源使用 `_WEBPAGE_SECTION`（完整原文），不再误用音频逐字稿分区
-
-**如仍失败**：在 FC 环境变量里配置 `ZHIHU_COOKIE`（从浏览器导出知乎登录态 Cookie）。
+**如失败**：在 FC 环境变量里配置 `ZHIHU_COOKIE`（从浏览器导出知乎登录态 Cookie）。
 
 ## 环境变量清单
 
@@ -187,6 +201,12 @@ FC 函数当前需要的环境变量：
 
 ## 调试技巧
 
-- FC 日志里的 `🚀 收到请求` `🔄 后台开始处理` 是关键起点标志
+- **本地拉日志**：项目根目录有 `fetch_logs.sh`（已加入 .gitignore，不提交）
+  ```bash
+  ./fetch_logs.sh        # 最近 30 分钟
+  ./fetch_logs.sh 60     # 最近 1 小时
+  ```
+- FC 日志里的关键标志：`🚀 收到请求` → `🔄 后台开始处理` → `⏱️ 音频时长` → `✅ 转写完成` → `✅ 全部完成`
 - 加 `print(f"🍪 ...")` 这类带 emoji 的日志便于在长日志里搜索定位
 - 后台异步任务的错误只能在 FC 日志里看，快捷指令端永远只看到 "已收到"
+- aliyun CLI 已配置在本地（`~/.aliyun/config.json`），SLS 插件已安装
