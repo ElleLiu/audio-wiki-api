@@ -18,6 +18,7 @@ OSS_ACCESS_KEY_SECRET = os.environ.get("OSS_ACCESS_KEY_SECRET")
 OSS_BUCKET_NAME       = os.environ.get("OSS_BUCKET_NAME", "obsidian-remotely-1121")
 OSS_ENDPOINT          = os.environ.get("OSS_ENDPOINT", "https://oss-cn-hongkong.aliyuncs.com")
 DASHSCOPE_BASE_URL    = os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
+ZHIHU_COOKIE          = os.environ.get("ZHIHU_COOKIE", "")
 
 missing = [k for k, v in {
     "DASHSCOPE_API_KEY": DASHSCOPE_API_KEY,
@@ -127,8 +128,11 @@ def fetch_webpage_text(url: str) -> tuple[str, str]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "zh-CN,zh;q=0.9",
-        "Referer": "https://www.google.com/",
+        "Referer": "https://www.zhihu.com/",
     }
+    if "zhihu.com" in url and ZHIHU_COOKIE:
+        headers["Cookie"] = ZHIHU_COOKIE
+        print("🍪 携带知乎 Cookie 抓取")
     try:
         resp = requests.get(url, headers=headers, timeout=20)
         resp.raise_for_status()
