@@ -120,7 +120,31 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
         print(f"❌ 下载失败: {e}")
         return None, None, datetime.now().strftime("%Y-%m-%d"), 0
 
-# ================= 4. Fun-ASR 转写 =================
+# ================= 4. 网页正文抓取 =================
+def fetch_webpage_text(url: str) -> tuple[str, str]:
+    """返回 (正文文本, 页面标题)，失败返回 ('', '')"""
+    import trafilatura
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Referer": "https://www.google.com/",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        text = trafilatura.extract(resp.text, include_comments=False, include_tables=True)
+        meta = trafilatura.extract_metadata(resp.text)
+        page_title = (meta.title if meta and meta.title else "") or ""
+        if text:
+            print(f"✅ 网页正文抓取成功，长度: {len(text)} 字")
+            return text, page_title
+        print("⚠️ trafilatura 未能提取正文")
+        return "", ""
+    except Exception as e:
+        print(f"❌ 网页抓取失败: {e}")
+        return "", ""
+
+# ================= 5. Fun-ASR 转写 =================
 def transcribe_with_funasr(audio_path: str) -> str:
     audio_url, oss_key = upload_audio_to_oss(audio_path)
     headers = {
@@ -263,16 +287,22 @@ def process_in_background(download_url: str, original_url: str, title: str, text
         else:
             mp3_path, detected_title, publish_date, duration = download_audio(download_url)
             if not mp3_path:
-                print("❌ 下载失败，任务终止")
-                return
-            if detected_title:
-                title = detected_title
-            raw_text = transcribe_with_funasr(mp3_path)
-            if os.path.exists(mp3_path):
-                os.remove(mp3_path)
-            if not raw_text:
-                print("❌ 转写失败，任务终止")
-                return
+                print("⚠️ 音频下载失败，尝试抓取网页正文...")
+                raw_text, page_title = fetch_webpage_text(download_url)
+                if not raw_text:
+                    print("❌ 网页抓取也失败，任务终止")
+                    return
+                if page_title and not detected_title:
+                    title = page_title
+            else:
+                if detected_title:
+                    title = detected_title
+                raw_text = transcribe_with_funasr(mp3_path)
+                if os.path.exists(mp3_path):
+                    os.remove(mp3_path)
+                if not raw_text:
+                    print("❌ 转写失败，任务终止")
+                    return
 
         is_long = duration > LONG_VIDEO_THRESHOLD
         if is_long:
