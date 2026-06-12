@@ -174,7 +174,7 @@ FC 函数当前需要的环境变量：
    - 调用阿里云 CLI 更新 FC 函数到新镜像
 3. 约 3-5 分钟后 FC 自动使用新镜像，无需手动操作
 
-**⚠️ ACR 代码源需禁用**：进 ACR 控制台 → 镜像仓库 → 构建 → 关闭"代码源"自动构建，避免与 GitHub Actions 双重构建冲突。
+**ACR 构建规则说明**：ACR 仅在推 `release-v*` tag 时触发构建（用于打正式版本镜像），不与 GitHub Actions 冲突。日常开发走 GitHub Actions 即可，无需改 ACR 配置。
 
 **GitHub Secrets 需配置**（仓库 Settings → Secrets and variables → Actions）：
 

@@ -7,7 +7,7 @@ on:
 env:
   REGISTRY: crpi-9kg6vtzvh3awqysx.cn-hongkong.personal.cr.aliyuncs.com
   REGISTRY_VPC: crpi-9kg6vtzvh3awqysx-vpc.cn-hongkong.personal.cr.aliyuncs.com
-  NAMESPACE: apps
+  NAMESPACE: elle-apps
   IMAGE_NAME: audio-wiki-api
   FC_REGION: cn-hongkong
   FC_FUNCTION: audio-wiki-api
