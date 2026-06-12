@@ -118,31 +118,15 @@ ydl_opts = {
 
 ## 待解决问题（按优先级）
 
-### P0：长视频内容被截断
+### P0：长视频内容被截断 ✅ 已修复
 
-**症状**：长视频的 Markdown 笔记只还原了部分原文。
+`max_tokens=8192` 已加入 DeepSeek 调用，并有 `finish_reason == 'length'` 截断检测日志。
 
-**最可能原因**：DeepSeek 输出 token 上限默认值太低。
+### P1：Markdown tags 改为 AI 自动生成 + 日期改为作品发布日期 ✅ 已修复
 
-**修复**：在 `process_in_background` 的 `client.chat.completions.create` 调用里加 `max_tokens=8192`（或更大）。
-
-**验证**：去 FC 日志里看 `raw_text` 长度，确认 Fun-ASR 转写本身是完整的，再判断是 ASR 截断还是 LLM 截断。
-
-### P1：Markdown tags 改为 AI 自动生成 + 日期改为作品发布日期
-
-**修改点 1**：`PROMPT_TEMPLATE` 里 tags 部分改成让 LLM 根据内容生成，不再硬编码 `#内容提取`。
-
-**修改点 2**：从 yt-dlp 的 `info` 中提取 `upload_date`（格式 `YYYYMMDD`），转成 `YYYY-MM-DD` 后传给 prompt 的 `{date}` 字段：
-
-```python
-upload_date = info.get('upload_date', '')
-if upload_date and len(upload_date) == 8:
-    publish_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
-else:
-    publish_date = datetime.now().strftime("%Y-%m-%d")
-```
-
-**修改点 3**：`download_audio` 返回值从 `(mp3_path, title)` 改为 `(mp3_path, title, publish_date)`，`process_in_background` 接收并传给 prompt。
+- Tags 由 LLM 根据内容自动生成（Prompt 已更新）
+- `download_audio` 从 yt-dlp `upload_date` 字段提取发布日期，格式化为 `YYYY-MM-DD`
+- 返回值已扩展为 `(mp3_path, title, publish_date, duration)`
 
 ### P2：抖音视频下载失败
 
@@ -152,6 +136,30 @@ else:
 - 抖音短链 `v.douyin.com/xxx` 可能需要先手动跟随重定向
 - 可能需要抖音 cookie（和 B站同样的方案）
 - yt-dlp 对抖音支持有限，可能需要升级到最新版本
+
+### P3：知乎链接抓取失败 ✅ 已改进诊断和逻辑
+
+**症状**：知乎 URL 处理后无 Markdown 输出。
+
+**根本原因**：
+1. yt-dlp 无法处理知乎（文字平台），会先失败再 fallback 到网页抓取——这是正常路径
+2. 知乎有反爬机制，未携带 Cookie 时可能返回登录墙或空内容
+
+**代码改进**（已上线）：
+- `fetch_webpage_text` 现在打印 HTTP 状态码和原始 HTML 长度，方便定位是被拦截还是空内容
+- 增加登录墙关键词检测（内容 <200 字且含"请登录"等词时明确报错）
+- 区分知乎是否携带 Cookie，未设置时打印警告
+- `process_in_background` 新增 `is_webpage` 标志，网页文章使用 `_WEBPAGE_SECTION`（"完整原文"），不再误用音频专用的"逐字稿"分区
+
+**FC 日志新增的关键诊断行**：
+```
+🌐 HTTP 200，原始 HTML 长度: XXXX 字符     ← 看这里判断是否被拦截
+⚠️ 知乎请求未携带 Cookie（ZHIHU_COOKIE 未设置）  ← Cookie 未配置时出现
+🚫 检测到登录墙，提取内容仅 XX 字           ← 遇到登录墙时出现
+📰 网页文章模式，保留完整原文               ← 网页内容成功进入 LLM 时出现
+```
+
+**如果仍然失败**：去 FC 环境变量里添加 `ZHIHU_COOKIE`，从浏览器插件（EditThisCookie 等）导出知乎登录态 Cookie 的 Netscape 格式文件内容。
 
 ## 环境变量清单
 
@@ -167,6 +175,7 @@ FC 函数当前需要的环境变量：
 | `OSS_ENDPOINT` | 默认 `https://oss-cn-hongkong.aliyuncs.com` |
 | `DASHSCOPE_BASE_URL` | 默认 `https://dashscope.aliyuncs.com/api/v1` |
 | `BILIBILI_COOKIES` | Netscape 格式的 cookie 文件全文，从浏览器插件导出 |
+| `ZHIHU_COOKIE` | 知乎登录态 Cookie 字符串（可选，未设置时知乎内容可能触发登录墙）|
 
 ## 安全事项
 
