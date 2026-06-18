@@ -1,10 +1,12 @@
 import os
+import re
 import time
 import threading
 import requests
 import yt_dlp
 import oss2
 from datetime import datetime
+from urllib.parse import urlparse
 from fastapi import FastAPI
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -123,6 +125,43 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
 
 # ================= 4. 网页正文抓取 =================
 _LOGIN_WALL_KEYWORDS = ["请登录", "登录后查看", "注册知乎", "登录知乎", "sign in", "log in to view"]
+_ANTI_BOT_KEYWORDS = [
+    "captcha",
+    "robot",
+    "bot check",
+    "unusual traffic",
+    "verify you are human",
+    "confirm you're not a bot",
+    "enable javascript",
+    "请完成安全验证",
+    "访问异常",
+    "人机验证",
+    "验证你是真人",
+]
+_YOUTUBE_SHELL_KEYWORDS = [
+    "about",
+    "press",
+    "copyright",
+    "contact us",
+    "creators",
+    "advertise",
+    "developers",
+    "terms",
+    "privacy",
+    "policy & safety",
+    "how youtube works",
+    "test new features",
+    "关于",
+    "新闻",
+    "版权",
+    "与我们联系",
+    "创作者",
+    "广告",
+    "开发者",
+    "条款",
+    "隐私权",
+    "政策与安全",
+]
 
 def _parse_cookie_header(cookie_str: str) -> str:
     """Cookie 字符串 → HTTP Cookie 请求头。
@@ -143,6 +182,39 @@ def _parse_cookie_header(cookie_str: str) -> str:
         return '; '.join(cookies)
     # 直接是 key=value; key2=value2 格式，原样使用
     return cookie_str.strip()
+
+def _hostname(url: str) -> str:
+    return urlparse(url).netloc.lower().removeprefix("www.")
+
+def _looks_like_youtube_url(url: str) -> bool:
+    host = _hostname(url)
+    return host in {"youtube.com", "m.youtube.com", "youtu.be", "youtube-nocookie.com"} or host.endswith(".youtube.com")
+
+def _looks_like_invalid_webpage(url: str, text: str, title: str = "") -> bool:
+    """识别反爬、登录墙、平台壳页等无效正文，避免把错误页面写入知识库。"""
+    normalized = re.sub(r"\s+", " ", f"{title}\n{text}".strip()).lower()
+    if not normalized:
+        return True
+
+    if any(keyword in normalized for keyword in _ANTI_BOT_KEYWORDS):
+        print("🚫 检测到反爬/人机验证页面，放弃网页正文兜底")
+        return True
+
+    if len(text.strip()) < 200 and any(keyword in normalized for keyword in _LOGIN_WALL_KEYWORDS):
+        print(f"🚫 检测到登录墙，提取内容仅 {len(text)} 字")
+        return True
+
+    # YouTube 下载失败后常会抓到平台 footer / 法律条款壳页，不能当成视频内容。
+    if _looks_like_youtube_url(url):
+        shell_hits = sum(1 for keyword in _YOUTUBE_SHELL_KEYWORDS if keyword in normalized)
+        if shell_hits >= 5:
+            print(f"🚫 检测到 YouTube 平台壳页/法律导航页（命中 {shell_hits} 个特征词），放弃保存")
+            return True
+        if "youtube" in normalized and len(text.strip()) < 800:
+            print("🚫 YouTube 页面正文过短，疑似反爬或平台导航页，放弃保存")
+            return True
+
+    return False
 
 def fetch_webpage_text(url: str) -> tuple[str, str]:
     """返回 (正文文本, 页面标题)，失败返回 ('', '')"""
@@ -168,8 +240,9 @@ def fetch_webpage_text(url: str) -> tuple[str, str]:
         if not text:
             print("⚠️ trafilatura 未能提取正文（页面可能需要登录或动态渲染）")
             return "", ""
-        if len(text) < 200 and any(kw in text.lower() for kw in _LOGIN_WALL_KEYWORDS):
-            print(f"🚫 检测到登录墙，提取内容仅 {len(text)} 字。请配置 ZHIHU_COOKIE 环境变量")
+        if _looks_like_invalid_webpage(url, text, page_title):
+            if is_zhihu:
+                print("如需抓取知乎内容，请确认 ZHIHU_COOKIE 环境变量是否有效")
             return "", ""
         print(f"✅ 网页正文抓取成功，标题: {page_title!r}，正文长度: {len(text)} 字")
         return text, page_title
@@ -332,7 +405,7 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                 print("⚠️ 音频下载失败，尝试抓取网页正文...")
                 raw_text, page_title = fetch_webpage_text(download_url)
                 if not raw_text:
-                    print("❌ 网页抓取也失败，任务终止")
+                    print("❌ 未采集到可用音视频，也没有抓取到有效网页正文，任务终止")
                     return
                 is_webpage = True
                 if page_title and not detected_title:
