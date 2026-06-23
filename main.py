@@ -390,6 +390,48 @@ _WEBPAGE_SECTION = """---
 
 """
 
+def generate_and_save_markdown(raw_text: str, title: str, source_url: str, publish_date: str, duration: float = 0, is_webpage: bool = False) -> str:
+    if is_webpage:
+        print("📰 网页文章模式，保留完整原文")
+        transcript_section = _WEBPAGE_SECTION
+    elif duration > LONG_VIDEO_THRESHOLD:
+        print(f"⏱️ 长内容（{int(duration)//60} 分钟），DeepSeek 将节选精彩片段")
+        transcript_section = _HIGHLIGHTS_SECTION
+    else:
+        print(f"⏱️ 短内容（{int(duration)//60} 分钟），完整还原逐字稿")
+        transcript_section = _TRANSCRIPT_SECTION
+
+    prompt = _PROMPT_BASE.format(
+        date=publish_date, url=source_url,
+        transcript_section=transcript_section, text=raw_text
+    )
+
+    print("📝 DeepSeek 润色中...")
+    response = client.chat.completions.create(
+        model="deepseek-v4-flash",
+        messages=[
+            {"role": "system", "content": "你是一个极其严谨的结构化知识提取助手。直接输出Markdown内容，第一行必须是 ---，禁止在frontmatter之前输出任何说明、问候或解释性文字。"},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.3,
+        max_tokens=8192
+    )
+    final_markdown = response.choices[0].message.content
+
+    # 裁掉 frontmatter 之前的任何废话
+    if '---' in final_markdown:
+        final_markdown = final_markdown[final_markdown.index('---'):]
+
+    finish_reason = response.choices[0].finish_reason
+    if finish_reason == 'length':
+        print("⚠️ 输出被 max_tokens 截断")
+
+    safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip() or "未命名内容"
+    filename = f"{safe_title}.md"
+    save_markdown_to_oss(final_markdown, filename)
+    print(f"✅ 全部完成！文件: {filename}")
+    return filename
+
 def process_in_background(download_url: str, original_url: str, title: str, text: str):
     current_date = datetime.now().strftime("%Y-%m-%d")
     publish_date = current_date
@@ -420,45 +462,7 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                     print("❌ 转写失败，任务终止")
                     return
 
-        if is_webpage:
-            print("📰 网页文章模式，保留完整原文")
-            transcript_section = _WEBPAGE_SECTION
-        elif duration > LONG_VIDEO_THRESHOLD:
-            print(f"⏱️ 长内容（{int(duration)//60} 分钟），DeepSeek 将节选精彩片段")
-            transcript_section = _HIGHLIGHTS_SECTION
-        else:
-            print(f"⏱️ 短内容（{int(duration)//60} 分钟），完整还原逐字稿")
-            transcript_section = _TRANSCRIPT_SECTION
-
-        prompt = _PROMPT_BASE.format(
-            date=publish_date, url=original_url,
-            transcript_section=transcript_section, text=raw_text
-        )
-
-        print("📝 DeepSeek 润色中...")
-        response = client.chat.completions.create(
-            model="deepseek-v4-flash",
-            messages=[
-                {"role": "system", "content": "你是一个极其严谨的结构化知识提取助手。直接输出Markdown内容，第一行必须是 ---，禁止在frontmatter之前输出任何说明、问候或解释性文字。"},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=8192
-        )
-        final_markdown = response.choices[0].message.content
-
-        # 裁掉 frontmatter 之前的任何废话
-        if '---' in final_markdown:
-            final_markdown = final_markdown[final_markdown.index('---'):]
-
-        finish_reason = response.choices[0].finish_reason
-        if finish_reason == 'length':
-            print("⚠️ 输出被 max_tokens 截断")
-
-        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
-        filename = f"{safe_title}.md"
-        save_markdown_to_oss(final_markdown, filename)
-        print(f"✅ 全部完成！文件: {filename}")
+        generate_and_save_markdown(raw_text, title, original_url, publish_date, duration, is_webpage)
 
     except Exception as e:
         print(f"❌ 后台处理异常: {e}")
