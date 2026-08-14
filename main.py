@@ -590,6 +590,32 @@ def _append_image_gallery(markdown: str, image_paths: list[str]) -> str:
     return f"{markdown.rstrip()}\n\n---\n\n## 原图\n\n{images}\n"
 
 
+def save_rednote_post(note: dict, source_url: str) -> str:
+    title = note["title"] or "未命名小红书笔记"
+    description = note["description"]
+    publish_date = note["publish_date"]
+    markdown = (
+        "---\n"
+        f"title: {json.dumps(title, ensure_ascii=False)}\n"
+        f"date: {publish_date}\n"
+        f"url: {json.dumps(source_url, ensure_ascii=False)}\n"
+        "---\n\n"
+        f"# {title}\n\n"
+        f"**来源链接：** [查看小红书原文]({source_url})\n\n"
+        "## 原文\n\n"
+        f"{description}\n"
+    )
+    markdown = _append_image_gallery(markdown, note["image_paths"])
+
+    safe_title = "".join(
+        c for c in title if c.isalnum() or c in (' ', '-', '_')
+    ).strip() or "未命名小红书笔记"
+    filename = f"{safe_title}.md"
+    save_markdown_to_oss(markdown, filename)
+    print(f"✅ 小红书原文原图保存完成！文件: {filename}")
+    return filename
+
+
 def generate_and_save_markdown(raw_text: str, title: str, source_url: str, publish_date: str, duration: float = 0, is_webpage: bool = False, image_paths: Optional[list[str]] = None) -> str:
     if is_webpage:
         print("📰 网页文章模式，保留完整原文")
@@ -650,12 +676,8 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                 if not mp3_path:
                     rednote = fetch_rednote_post(download_url) if _is_rednote_url(download_url) else {}
                     if rednote:
-                        raw_text = rednote["description"] or rednote["title"]
-                        title = rednote["title"] or title
-                        publish_date = rednote["publish_date"]
-                        image_paths = rednote["image_paths"]
-                        is_webpage = True
-                        page_title = title
+                        save_rednote_post(rednote, original_url)
+                        return
                     else:
                         print("⚠️ 音频下载失败，尝试抓取网页正文...")
                         raw_text, page_title = fetch_webpage_text(download_url)

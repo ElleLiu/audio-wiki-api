@@ -169,6 +169,58 @@ class UrlExtractionTests(unittest.TestCase):
         self.assertIn("![小红书图片 1](assets/rednote/a.webp)", markdown)
         self.assertIn("![小红书图片 2](assets/rednote/b.webp)", markdown)
 
+    def test_saves_rednote_original_text_and_images_without_deepseek(self):
+        note = {
+            "title": "GPT Live 口语实践",
+            "description": "第一段原文。\n\n第二段保持原样。",
+            "publish_date": "2026-08-14",
+            "image_paths": [
+                "assets/rednote/a.webp",
+                "assets/rednote/b.webp",
+            ],
+        }
+
+        with patch.object(main, "save_markdown_to_oss") as save_markdown:
+            filename = main.save_rednote_post(
+                note,
+                "https://xhslink.cn/o/example",
+            )
+
+        self.assertEqual(filename, "GPT Live 口语实践.md")
+        markdown, saved_filename = save_markdown.call_args.args
+        self.assertEqual(saved_filename, filename)
+        self.assertIn("## 原文\n\n第一段原文。\n\n第二段保持原样。", markdown)
+        self.assertIn("![小红书图片 1](assets/rednote/a.webp)", markdown)
+        self.assertNotIn("SCQA", markdown)
+        self.assertNotIn("核心脉络", markdown)
+
+    def test_rednote_image_post_skips_deepseek_pipeline(self):
+        note = {
+            "title": "图文标题",
+            "description": "原始正文",
+            "publish_date": "2026-08-14",
+            "image_paths": ["assets/rednote/a.webp"],
+        }
+
+        with (
+            patch.object(main, "download_audio", return_value=(None, "", "", 0)),
+            patch.object(main, "fetch_rednote_post", return_value=note),
+            patch.object(main, "save_rednote_post") as save_rednote,
+            patch.object(main, "generate_and_save_markdown") as generate_markdown,
+        ):
+            main.process_in_background(
+                "https://xhslink.cn/o/example",
+                "https://xhslink.cn/o/example",
+                "未命名内容",
+                "",
+            )
+
+        save_rednote.assert_called_once_with(
+            note,
+            "https://xhslink.cn/o/example",
+        )
+        generate_markdown.assert_not_called()
+
     def test_parses_httponly_netscape_cookie(self):
         cookies = (
             "# Netscape HTTP Cookie File\n"

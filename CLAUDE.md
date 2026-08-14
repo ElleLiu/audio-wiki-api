@@ -155,8 +155,9 @@ ydl_opts = {
 
 ### 小红书图文笔记
 
-图文笔记保存标题、正文配文和全部图片，不做 OCR。图片最长边缩至 1600px，
-转为 quality=80 的 WebP，并按内容哈希保存到 `assets/rednote/` 以避免重复占用。
+图文笔记直接保存标题、原始正文配文和全部图片，不调用 DeepSeek、不套 SCQA、
+不做 OCR。图片最长边缩至 1600px，转为 quality=80 的 WebP，并按内容哈希
+保存到 `assets/rednote/` 以避免重复占用。
 
 ### P2：知乎登录墙
 
