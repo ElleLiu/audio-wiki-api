@@ -153,6 +153,11 @@ ydl_opts = {
 **已处理**：接口会从整段抖音分享文案中提取短链，并为抖音单独配置请求头和
 `DOUYIN_COOKIES`。抖音 Cookie 需使用 Netscape 格式，并在失效后重新导出。
 
+### 小红书图文笔记
+
+图文笔记保存标题、正文配文和全部图片，不做 OCR。图片最长边缩至 1600px，
+转为 quality=80 的 WebP，并按内容哈希保存到 `assets/rednote/` 以避免重复占用。
+
 ### P2：知乎登录墙
 
 **如失败**：在 FC 环境变量里配置 `ZHIHU_COOKIE`（从浏览器导出知乎登录态 Cookie）。
@@ -172,12 +177,13 @@ FC 函数当前需要的环境变量：
 | `DASHSCOPE_BASE_URL` | 默认 `https://dashscope.aliyuncs.com/api/v1` |
 | `BILIBILI_COOKIES` | Netscape 格式的 cookie 文件全文，从浏览器插件导出 |
 | `DOUYIN_COOKIES` | Netscape 格式的抖音 cookie 文件全文，从浏览器插件导出 |
+| `REDNOTE_COOKIES` | Netscape 格式的小红书 cookie 文件全文，用于视频和图文笔记 |
 | `ZHIHU_COOKIE` | 知乎登录态 Cookie 字符串（可选，未设置时知乎内容可能触发登录墙）|
 
 ## 安全事项
 
 - **AccessKey 务必用 RAM 用户**，权限最小化（只给 OSS 权限），不要用主账号 Key
-- **BILIBILI_COOKIES / DOUYIN_COOKIES 含登录态**，泄露等于账号被盗，注意不要 commit 到 GitHub
+- **BILIBILI_COOKIES / DOUYIN_COOKIES / REDNOTE_COOKIES 含登录态**，泄露等于账号被盗，注意不要 commit 到 GitHub
 - FC HTTP 触发器是公网可访问的，会持续被网络扫描（GET /、GET /favicon.ico 等），返回 404 是正常背景噪音，不是攻击
 
 ## 部署流程（全自动）

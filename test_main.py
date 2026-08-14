@@ -99,6 +99,88 @@ class UrlExtractionTests(unittest.TestCase):
         self.assertNotIn("Referer", headers)
         self.assertIsNone(cookie_path)
 
+    def test_rednote_uses_its_own_cookie_and_referer(self):
+        with patch.object(
+            main,
+            "_write_cookie_file",
+            return_value="/tmp/rednote_cookies.txt",
+        ) as write_cookie:
+            headers, cookie_path = main._download_site_options(
+                "https://xhslink.cn/o/example"
+            )
+
+        self.assertEqual(headers["Referer"], "https://www.xiaohongshu.com/")
+        self.assertEqual(cookie_path, "/tmp/rednote_cookies.txt")
+        write_cookie.assert_called_once_with(
+            "REDNOTE_COOKIES", "/tmp/rednote_cookies.txt"
+        )
+
+    def test_builds_canonical_rednote_url_from_shortlink_redirect(self):
+        redirected = (
+            "https://www.xiaohongshu.com/explore?target_note_id=abc123"
+            "&xsec_token=token-value&xsec_source=pc_share"
+        )
+
+        canonical = main._canonical_rednote_url(redirected)
+
+        self.assertEqual(
+            canonical,
+            "https://www.xiaohongshu.com/explore/abc123?target_note_id=abc123"
+            "&xsec_token=token-value&xsec_source=pc_share",
+        )
+
+    def test_extracts_rednote_images_from_initial_state(self):
+        html = '''
+        <script>
+        window.__INITIAL_STATE__ = {
+          "note": {"noteDetailMap": {"abc123": {"note": {
+            "title": "图文标题",
+            "desc": "图文正文",
+            "time": 1786636800000,
+            "imageList": [
+              {"urlDefault": "https://img.example/1.jpg"},
+              {"urlDefault": "https://img.example/2.jpg"}
+            ]
+          }}}}
+        };
+        </script>
+        '''
+
+        note = main._extract_rednote_note(
+            html,
+            "https://www.xiaohongshu.com/explore",
+        )
+
+        self.assertEqual(note["id"], "abc123")
+        self.assertEqual(note["title"], "图文标题")
+        self.assertEqual(note["description"], "图文正文")
+        self.assertEqual(
+            note["image_urls"],
+            ["https://img.example/1.jpg", "https://img.example/2.jpg"],
+        )
+
+    def test_appends_obsidian_image_gallery(self):
+        markdown = main._append_image_gallery(
+            "---\ntitle: 测试\n---\n\n正文",
+            ["assets/rednote/a.webp", "assets/rednote/b.webp"],
+        )
+
+        self.assertIn("## 原图", markdown)
+        self.assertIn("![小红书图片 1](assets/rednote/a.webp)", markdown)
+        self.assertIn("![小红书图片 2](assets/rednote/b.webp)", markdown)
+
+    def test_parses_httponly_netscape_cookie(self):
+        cookies = (
+            "# Netscape HTTP Cookie File\n"
+            "#HttpOnly_.xiaohongshu.com\tTRUE\t/\tTRUE\t0\tweb_session\tabc123\n"
+            ".xiaohongshu.com\tTRUE\t/\tFALSE\t0\ta1\tvalue1"
+        )
+
+        self.assertEqual(
+            main._parse_cookie_header(cookies),
+            "web_session=abc123; a1=value1",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

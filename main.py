@@ -1,6 +1,9 @@
 import os
 import re
 import time
+import io
+import json
+import hashlib
 import threading
 import tempfile
 import requests
@@ -8,7 +11,7 @@ import yt_dlp
 import oss2
 from datetime import datetime
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from fastapi import FastAPI
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -23,6 +26,7 @@ OSS_BUCKET_NAME       = os.environ.get("OSS_BUCKET_NAME", "obsidian-remotely-112
 OSS_ENDPOINT          = os.environ.get("OSS_ENDPOINT", "https://oss-cn-hongkong.aliyuncs.com")
 DASHSCOPE_BASE_URL    = os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
 ZHIHU_COOKIE          = os.environ.get("ZHIHU_COOKIE", "")
+REDNOTE_COOKIES       = os.environ.get("REDNOTE_COOKIES", "")
 
 missing = [k for k, v in {
     "DASHSCOPE_API_KEY": DASHSCOPE_API_KEY,
@@ -62,6 +66,24 @@ def extract_first_url(value: str) -> str:
     return match.group(0).rstrip(_URL_TRAILING_PUNCTUATION)
 
 
+def _is_rednote_url(url: str) -> bool:
+    hostname = (urlparse(url).hostname or "").lower()
+    return (
+        hostname in {"xiaohongshu.com", "xhslink.cn", "xhslink.com"}
+        or hostname.endswith(".xiaohongshu.com")
+    )
+
+
+def _canonical_rednote_url(url: str) -> str:
+    parsed = urlparse(url)
+    if re.search(r'/(?:explore|discovery/item)/[\da-f]+', parsed.path):
+        return url
+    target_note_ids = parse_qs(parsed.query).get("target_note_id", [])
+    if not target_note_ids or not re.fullmatch(r'[\da-f]+', target_note_ids[0]):
+        return url
+    return parsed._replace(path=f"/explore/{target_note_ids[0]}").geturl()
+
+
 def _write_cookie_file(env_name: str, path: str) -> Optional[str]:
     content = os.environ.get(env_name, "").strip()
     if not content:
@@ -84,6 +106,9 @@ def _download_site_options(url: str) -> tuple[dict, Optional[str]]:
     elif hostname == "douyin.com" or hostname.endswith(".douyin.com"):
         headers['Referer'] = 'https://www.douyin.com/'
         cookie_path = _write_cookie_file("DOUYIN_COOKIES", "/tmp/douyin_cookies.txt")
+    elif _is_rednote_url(url):
+        headers['Referer'] = 'https://www.xiaohongshu.com/'
+        cookie_path = _write_cookie_file("REDNOTE_COOKIES", "/tmp/rednote_cookies.txt")
 
     return headers, cookie_path
 
@@ -213,7 +238,9 @@ def _parse_cookie_header(cookie_str: str) -> str:
         cookies = []
         for line in cookie_str.splitlines():
             line = line.strip()
-            if not line or line.startswith('#'):
+            if line.startswith('#HttpOnly_'):
+                line = line.removeprefix('#HttpOnly_')
+            elif not line or line.startswith('#'):
                 continue
             parts = line.split('\t')
             if len(parts) >= 7:
@@ -288,6 +315,131 @@ def fetch_webpage_text(url: str) -> tuple[str, str]:
     except Exception as e:
         print(f"❌ 网页抓取失败: {type(e).__name__}: {e}")
         return "", ""
+
+
+def _extract_rednote_note(html: str, resolved_url: str) -> dict:
+    from yt_dlp.utils import js_to_json
+
+    note_id_match = re.search(r'/(?:explore|discovery/item)/([\da-f]+)', resolved_url)
+    state_match = re.search(
+        r'window\.__INITIAL_STATE__\s*=\s*(.*?)</script>',
+        html,
+        flags=re.DOTALL,
+    )
+    if not state_match:
+        return {}
+
+    state_source = state_match.group(1).strip().rstrip(';')
+    state = json.loads(js_to_json(state_source))
+    note_map = state.get("note", {}).get("noteDetailMap", {})
+    note_id = note_id_match.group(1) if note_id_match else next(iter(note_map), "")
+    if not note_id:
+        return {}
+    note_wrapper = note_map.get(note_id, {})
+    note = note_wrapper.get("note", {})
+    if not note:
+        return {}
+
+    image_urls = []
+    for image_info in note.get("imageList", []):
+        image_url = image_info.get("urlDefault") or image_info.get("urlPre")
+        if image_url and image_url not in image_urls:
+            image_urls.append(image_url)
+
+    timestamp = note.get("time") or note.get("lastUpdateTime") or 0
+    if timestamp and timestamp > 10_000_000_000:
+        timestamp /= 1000
+    publish_date = (
+        datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+        if timestamp else datetime.now().strftime("%Y-%m-%d")
+    )
+    return {
+        "id": note_id,
+        "title": note.get("title", "").strip(),
+        "description": note.get("desc", "").strip(),
+        "publish_date": publish_date,
+        "image_urls": image_urls,
+    }
+
+
+def _rednote_headers(referer: str) -> dict:
+    headers = {
+        "User-Agent": DESKTOP_USER_AGENT,
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Referer": referer,
+    }
+    if REDNOTE_COOKIES:
+        headers["Cookie"] = _parse_cookie_header(REDNOTE_COOKIES)
+    return headers
+
+
+def _compress_and_upload_rednote_image(image_url: str, referer: str) -> str:
+    from PIL import Image, ImageOps
+
+    response = requests.get(image_url, headers=_rednote_headers(referer), timeout=30)
+    response.raise_for_status()
+    if len(response.content) > 20 * 1024 * 1024:
+        raise ValueError("图片超过 20MB")
+
+    with Image.open(io.BytesIO(response.content)) as source_image:
+        image = ImageOps.exif_transpose(source_image)
+        image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+        if image.mode not in {"RGB", "RGBA"}:
+            image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+        output = io.BytesIO()
+        image.save(output, format="WEBP", quality=80, method=4)
+
+    image_bytes = output.getvalue()
+    digest = hashlib.sha256(image_bytes).hexdigest()[:20]
+    oss_key = f"assets/rednote/{digest}.webp"
+    get_oss_bucket().put_object(
+        oss_key,
+        image_bytes,
+        headers={"Content-Type": "image/webp"},
+    )
+    print(f"🖼️ 小红书图片已压缩上传: {oss_key} ({len(image_bytes) / 1024:.0f} KB)")
+    return oss_key
+
+
+def fetch_rednote_post(url: str) -> dict:
+    try:
+        response = requests.get(url, headers=_rednote_headers(url), timeout=30)
+        response.raise_for_status()
+        canonical_url = _canonical_rednote_url(response.url)
+        if canonical_url != response.url:
+            response = requests.get(
+                canonical_url,
+                headers=_rednote_headers(canonical_url),
+                timeout=30,
+            )
+            response.raise_for_status()
+        note = _extract_rednote_note(response.text, response.url)
+        if not note:
+            print("⚠️ 未从小红书页面提取到图文数据")
+            return {}
+
+        image_paths = []
+        for index, image_url in enumerate(note["image_urls"], start=1):
+            try:
+                image_paths.append(
+                    _compress_and_upload_rednote_image(image_url, response.url)
+                )
+            except Exception as exc:
+                print(f"⚠️ 小红书第 {index} 张图片处理失败: {exc}")
+
+        if not image_paths and not note["description"]:
+            print("⚠️ 小红书笔记既没有可用图片，也没有正文")
+            return {}
+
+        note["image_paths"] = image_paths
+        print(
+            f"✅ 小红书图文提取完成: {note['title']!r}, "
+            f"正文 {len(note['description'])} 字, 图片 {len(image_paths)} 张"
+        )
+        return note
+    except Exception as exc:
+        print(f"❌ 小红书图文抓取失败: {type(exc).__name__}: {exc}")
+        return {}
 
 # ================= 5. Fun-ASR 转写 =================
 def transcribe_with_funasr(audio_path: str) -> str:
@@ -428,7 +580,17 @@ _WEBPAGE_SECTION = """---
 
 """
 
-def generate_and_save_markdown(raw_text: str, title: str, source_url: str, publish_date: str, duration: float = 0, is_webpage: bool = False) -> str:
+def _append_image_gallery(markdown: str, image_paths: list[str]) -> str:
+    if not image_paths:
+        return markdown
+    images = "\n\n".join(
+        f"![小红书图片 {index}]({path})"
+        for index, path in enumerate(image_paths, start=1)
+    )
+    return f"{markdown.rstrip()}\n\n---\n\n## 原图\n\n{images}\n"
+
+
+def generate_and_save_markdown(raw_text: str, title: str, source_url: str, publish_date: str, duration: float = 0, is_webpage: bool = False, image_paths: Optional[list[str]] = None) -> str:
     if is_webpage:
         print("📰 网页文章模式，保留完整原文")
         transcript_section = _WEBPAGE_SECTION
@@ -464,6 +626,8 @@ def generate_and_save_markdown(raw_text: str, title: str, source_url: str, publi
     if finish_reason == 'length':
         print("⚠️ 输出被 max_tokens 截断")
 
+    final_markdown = _append_image_gallery(final_markdown, image_paths or [])
+
     safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip() or "未命名内容"
     filename = f"{safe_title}.md"
     save_markdown_to_oss(final_markdown, filename)
@@ -475,6 +639,7 @@ def process_in_background(download_url: str, original_url: str, title: str, text
     publish_date = current_date
     duration = 0
     is_webpage = False
+    image_paths = []
     print(f"🔄 后台开始处理: {download_url}")
     try:
         if text and len(text.strip()) > 10:
@@ -483,14 +648,24 @@ def process_in_background(download_url: str, original_url: str, title: str, text
             with tempfile.TemporaryDirectory(prefix="audio-wiki-download-") as download_dir:
                 mp3_path, detected_title, publish_date, duration = download_audio(download_url, download_dir)
                 if not mp3_path:
-                    print("⚠️ 音频下载失败，尝试抓取网页正文...")
-                    raw_text, page_title = fetch_webpage_text(download_url)
+                    rednote = fetch_rednote_post(download_url) if _is_rednote_url(download_url) else {}
+                    if rednote:
+                        raw_text = rednote["description"] or rednote["title"]
+                        title = rednote["title"] or title
+                        publish_date = rednote["publish_date"]
+                        image_paths = rednote["image_paths"]
+                        is_webpage = True
+                        page_title = title
+                    else:
+                        print("⚠️ 音频下载失败，尝试抓取网页正文...")
+                        raw_text, page_title = fetch_webpage_text(download_url)
                     if not raw_text:
                         print("❌ 未采集到可用音视频，也没有抓取到有效网页正文，任务终止")
                         return
-                    is_webpage = True
-                    if page_title and not detected_title:
-                        title = page_title
+                    if not rednote:
+                        is_webpage = True
+                        if page_title and not detected_title:
+                            title = page_title
                 else:
                     if detected_title:
                         title = detected_title
@@ -499,7 +674,10 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                         print("❌ 转写失败，任务终止")
                         return
 
-        generate_and_save_markdown(raw_text, title, original_url, publish_date, duration, is_webpage)
+        generate_and_save_markdown(
+            raw_text, title, original_url, publish_date, duration,
+            is_webpage, image_paths,
+        )
 
     except Exception as e:
         print(f"❌ 后台处理异常: {e}")
