@@ -2,10 +2,12 @@ import os
 import re
 import time
 import threading
+import tempfile
 import requests
 import yt_dlp
 import oss2
 from datetime import datetime
+from typing import Optional
 from urllib.parse import urlparse
 from fastapi import FastAPI
 from openai import OpenAI
@@ -43,6 +45,48 @@ def get_oss_bucket():
 
 app = FastAPI(title="Wiki API")
 
+DESKTOP_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+_URL_PATTERN = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
+_URL_TRAILING_PUNCTUATION = '.,;:!?，。；：！？、)]}）》】」』'
+
+
+def extract_first_url(value: str) -> str:
+    """Extract a usable URL from app share text or return an empty string."""
+    match = _URL_PATTERN.search(value or "")
+    if not match:
+        return ""
+    return match.group(0).rstrip(_URL_TRAILING_PUNCTUATION)
+
+
+def _write_cookie_file(env_name: str, path: str) -> Optional[str]:
+    content = os.environ.get(env_name, "").strip()
+    if not content:
+        return None
+    with open(path, "w", encoding="utf-8") as cookie_file:
+        cookie_file.write(content)
+        cookie_file.write("\n")
+    os.chmod(path, 0o600)
+    return path
+
+
+def _download_site_options(url: str) -> tuple[dict, Optional[str]]:
+    hostname = (urlparse(url).hostname or "").lower()
+    headers = {'User-Agent': DESKTOP_USER_AGENT}
+    cookie_path = None
+
+    if hostname == "bilibili.com" or hostname.endswith(".bilibili.com") or hostname == "b23.tv":
+        headers['Referer'] = 'https://www.bilibili.com/'
+        cookie_path = _write_cookie_file("BILIBILI_COOKIES", "/tmp/bilibili_cookies.txt")
+    elif hostname == "douyin.com" or hostname.endswith(".douyin.com"):
+        headers['Referer'] = 'https://www.douyin.com/'
+        cookie_path = _write_cookie_file("DOUYIN_COOKIES", "/tmp/douyin_cookies.txt")
+
+    return headers, cookie_path
+
 # ================= 2. OSS 工具函数 =================
 def upload_audio_to_oss(audio_path: str):
     import re
@@ -66,20 +110,18 @@ def delete_oss_file(oss_key: str):
     try:
         get_oss_bucket().delete_object(oss_key)
         print(f"🗑️ OSS 临时文件已清理: {oss_key}")
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ OSS 临时文件清理失败: {oss_key}, {e}")
 
 def download_audio(url: str, output_dir: str = "/tmp/downloads"):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
     url = url.replace("m.bilibili.com", "www.bilibili.com")
-
-    cookie_path = "/tmp/bilibili_cookies.txt"
-    cookies_content = os.environ.get("BILIBILI_COOKIES", "")
-    if cookies_content and not os.path.exists(cookie_path):
-        with open(cookie_path, "w") as f:
-            f.write(cookies_content)
+    http_headers, cookie_path = _download_site_options(url)
+    hostname = (urlparse(url).hostname or "").lower()
+    if (hostname == "douyin.com" or hostname.endswith(".douyin.com")) and not cookie_path:
+        print("⚠️ 未配置 DOUYIN_COOKIES，抖音可能拒绝下载")
 
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -89,14 +131,11 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
         'no_warnings': True,
         'retries': 3,
         'socket_timeout': 60,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://www.bilibili.com/',
-            },
+        'http_headers': http_headers,
     }
     
     # 如果有 cookie 文件，加上
-    if os.path.exists(cookie_path):
+    if cookie_path and os.path.exists(cookie_path):
         ydl_opts['cookiefile'] = cookie_path
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -252,56 +291,52 @@ def fetch_webpage_text(url: str) -> tuple[str, str]:
 
 # ================= 5. Fun-ASR 转写 =================
 def transcribe_with_funasr(audio_path: str) -> str:
-    audio_url, oss_key = upload_audio_to_oss(audio_path)
-    headers = {
-        "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
-        "Content-Type": "application/json",
-        "X-DashScope-Async": "enable",
-    }
-    payload = {
-        "model": "fun-asr",
-        "input": {"file_urls": [audio_url]},
-        "parameters": {"diarization_enabled": True, "language_hints": ["zh", "en"]},
-    }
+    oss_key = None
     try:
-        resp = requests.post(f"{DASHSCOPE_BASE_URL}/services/audio/asr/transcription",
-                             headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        task_id = resp.json()["output"]["task_id"]
-        print(f"✅ 转写任务已提交: {task_id}")
-    except Exception as e:
-        print(f"❌ 提交失败: {e}")
-        delete_oss_file(oss_key)
-        return ""
-
-    query_headers = {"Authorization": f"Bearer {DASHSCOPE_API_KEY}"}
-    result = None
-    for i in range(120):
-        time.sleep(5)
+        audio_url, oss_key = upload_audio_to_oss(audio_path)
+        headers = {
+            "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
+            "Content-Type": "application/json",
+            "X-DashScope-Async": "enable",
+        }
+        payload = {
+            "model": "fun-asr",
+            "input": {"file_urls": [audio_url]},
+            "parameters": {"diarization_enabled": True, "language_hints": ["zh", "en"]},
+        }
         try:
-            r = requests.get(f"{DASHSCOPE_BASE_URL}/tasks/{task_id}", headers=query_headers, timeout=15)
-            r.raise_for_status()
-            result = r.json()
-            status = result["output"]["task_status"]
-            if status == "SUCCEEDED":
-                print("✅ 转写完成")
-                break
-            elif status == "FAILED":
-                print(f"❌ 转写失败: {result}")
-                delete_oss_file(oss_key)
-                return ""
-            elif i % 6 == 0:
-                print(f"   状态: {status}...")
+            resp = requests.post(f"{DASHSCOPE_BASE_URL}/services/audio/asr/transcription",
+                                 headers=headers, json=payload, timeout=30)
+            resp.raise_for_status()
+            task_id = resp.json()["output"]["task_id"]
+            print(f"✅ 转写任务已提交: {task_id}")
         except Exception as e:
-            print(f"⚠️ 查询异常: {e}")
-    else:
-        print("❌ 转写超时")
-        delete_oss_file(oss_key)
-        return ""
+            print(f"❌ 提交失败: {e}")
+            return ""
 
-    delete_oss_file(oss_key)
+        query_headers = {"Authorization": f"Bearer {DASHSCOPE_API_KEY}"}
+        result = None
+        for i in range(120):
+            time.sleep(5)
+            try:
+                r = requests.get(f"{DASHSCOPE_BASE_URL}/tasks/{task_id}", headers=query_headers, timeout=15)
+                r.raise_for_status()
+                result = r.json()
+                status = result["output"]["task_status"]
+                if status == "SUCCEEDED":
+                    print("✅ 转写完成")
+                    break
+                elif status == "FAILED":
+                    print(f"❌ 转写失败: {result}")
+                    return ""
+                elif i % 6 == 0:
+                    print(f"   状态: {status}...")
+            except Exception as e:
+                print(f"⚠️ 查询异常: {e}")
+        else:
+            print("❌ 转写超时")
+            return ""
 
-    try:
         sentences = []
         for item in result["output"]["results"]:
             if item.get("subtask_status") != "SUCCEEDED":
@@ -328,8 +363,11 @@ def transcribe_with_funasr(audio_path: str) -> str:
                 full_text += f"{s['text']}\n\n"
         return full_text.strip()
     except Exception as e:
-        print(f"❌ 解析结果失败: {e}")
+        print(f"❌ 转写处理失败: {e}")
         return ""
+    finally:
+        if oss_key:
+            delete_oss_file(oss_key)
 
 # ================= 5. 后台处理任务 =================
 LONG_VIDEO_THRESHOLD = 900  # 15 分钟，单位秒
@@ -442,25 +480,24 @@ def process_in_background(download_url: str, original_url: str, title: str, text
         if text and len(text.strip()) > 10:
             raw_text = text
         else:
-            mp3_path, detected_title, publish_date, duration = download_audio(download_url)
-            if not mp3_path:
-                print("⚠️ 音频下载失败，尝试抓取网页正文...")
-                raw_text, page_title = fetch_webpage_text(download_url)
-                if not raw_text:
-                    print("❌ 未采集到可用音视频，也没有抓取到有效网页正文，任务终止")
-                    return
-                is_webpage = True
-                if page_title and not detected_title:
-                    title = page_title
-            else:
-                if detected_title:
-                    title = detected_title
-                raw_text = transcribe_with_funasr(mp3_path)
-                if os.path.exists(mp3_path):
-                    os.remove(mp3_path)
-                if not raw_text:
-                    print("❌ 转写失败，任务终止")
-                    return
+            with tempfile.TemporaryDirectory(prefix="audio-wiki-download-") as download_dir:
+                mp3_path, detected_title, publish_date, duration = download_audio(download_url, download_dir)
+                if not mp3_path:
+                    print("⚠️ 音频下载失败，尝试抓取网页正文...")
+                    raw_text, page_title = fetch_webpage_text(download_url)
+                    if not raw_text:
+                        print("❌ 未采集到可用音视频，也没有抓取到有效网页正文，任务终止")
+                        return
+                    is_webpage = True
+                    if page_title and not detected_title:
+                        title = page_title
+                else:
+                    if detected_title:
+                        title = detected_title
+                    raw_text = transcribe_with_funasr(mp3_path)
+                    if not raw_text:
+                        print("❌ 转写失败，任务终止")
+                        return
 
         generate_and_save_markdown(raw_text, title, original_url, publish_date, duration, is_webpage)
 
@@ -472,14 +509,15 @@ def process_in_background(download_url: str, original_url: str, title: str, text
 # ================= 6. API 接口（立即返回） =================
 @app.post("/api/process")
 def process_podcast_endpoint(req: dict):
-    download_url = req.get("url", "")
-    original_url = req.get("original_url") or download_url
+    submitted_url = req.get("url", "")
+    download_url = extract_first_url(submitted_url)
+    original_url = extract_first_url(req.get("original_url", "")) or download_url
     title = req.get("title", "未命名内容")
     text = req.get("text", "")
     raw = req.get("raw", False)
 
     if not download_url and not text:
-        return {"status": "error", "message": "未提供 URL 或文本"}
+        return {"status": "error", "message": "未识别到有效 URL 或文本"}
 
     # raw 模式：跳过 DeepSeek，直接把文本包一层 frontmatter 存 OSS
     if raw and text:
