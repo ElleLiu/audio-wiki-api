@@ -169,6 +169,36 @@ class UrlExtractionTests(unittest.TestCase):
         self.assertIn("![小红书图片 1](assets/rednote/a.webp)", markdown)
         self.assertIn("![小红书图片 2](assets/rednote/b.webp)", markdown)
 
+    def test_appends_ocr_text_under_each_image(self):
+        markdown = main._append_image_gallery(
+            "正文", ["assets/rednote/a.webp", "assets/rednote/b.webp"],
+            ["第一张文字\n第二行", "第二张文字"],
+        )
+        self.assertIn("## 图片文字（OCR）\n\n### 图片 1\n\n第一张文字\n第二行", markdown)
+        self.assertIn("### 图片 2\n\n第二张文字", markdown)
+
+    def test_image_ocr_failure_keeps_image_and_marks_failure(self):
+        note = {"title": "测试", "description": "正文", "image_urls": ["https://img.example/1.jpg"]}
+        with (
+            patch.object(main, "_compress_and_upload_rednote_image", return_value=("assets/rednote/a.webp", b"webp")),
+            patch.object(main, "_ocr_rednote_image", side_effect=RuntimeError("unavailable")),
+        ):
+            result = main._save_rednote_images(note, "https://www.xiaohongshu.com/")
+        self.assertEqual(result["image_paths"], ["assets/rednote/a.webp"])
+        self.assertEqual(result["image_ocr"], ["（OCR 识别失败，请查看原图）"])
+
+    def test_ocr_sends_webp_bytes_and_preserves_transcription(self):
+        mock_completion = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="图中文字\n第二行"))]
+        )
+        mock_client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **kwargs: mock_completion))
+        )
+        with patch.object(main, "OpenAI", return_value=mock_client) as make_client:
+            text = main._ocr_rednote_image(b"webp")
+        self.assertEqual(text, "图中文字\n第二行")
+        self.assertEqual(make_client.call_args.kwargs["base_url"], main.DASHSCOPE_OCR_BASE_URL)
+
     def test_saves_rednote_original_text_and_images_without_deepseek(self):
         note = {
             "title": "GPT Live 口语实践",
@@ -250,12 +280,14 @@ class UrlExtractionTests(unittest.TestCase):
             patch.object(main.requests, "get", return_value=response),
             patch.object(main, "_download_site_options", return_value=({}, "/tmp/rednote.txt")),
             patch.object(main.yt_dlp, "YoutubeDL", FakeYDL),
-            patch.object(main, "_compress_and_upload_rednote_image", return_value="assets/rednote/1.webp"),
+            patch.object(main, "_compress_and_upload_rednote_image", return_value=("assets/rednote/1.webp", b"webp")),
+            patch.object(main, "_ocr_rednote_image", return_value="图片文字"),
         ):
             note = main.fetch_rednote_post("https://xhslink.cn/o/vK1nRIGPP1")
 
         self.assertEqual(note["title"], "被裁满一个月")
         self.assertEqual(note["image_paths"], ["assets/rednote/1.webp"])
+        self.assertEqual(note["image_ocr"], ["图片文字"])
 
     def test_rednote_placeholder_title_uses_description(self):
         class FakeYDL:
