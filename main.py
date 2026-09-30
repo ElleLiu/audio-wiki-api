@@ -798,8 +798,7 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                 if not mp3_path:
                     rednote = fetch_rednote_post(download_url) if _is_rednote_url(download_url) else {}
                     if rednote:
-                        save_rednote_post(rednote, original_url)
-                        return
+                        return save_rednote_post(rednote, original_url)
                     else:
                         print("⚠️ 音频下载失败，尝试抓取网页正文...")
                         raw_text, page_title = fetch_webpage_text(download_url)
@@ -818,7 +817,7 @@ def process_in_background(download_url: str, original_url: str, title: str, text
                         print("❌ 转写失败，任务终止")
                         return
 
-        generate_and_save_markdown(
+        return generate_and_save_markdown(
             raw_text, title, original_url, publish_date, duration,
             is_webpage, image_paths,
         )
@@ -852,6 +851,14 @@ def process_podcast_endpoint(req: dict):
             return {"status": "ok", "message": f"✅ 已保存：{safe_title}.md"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    # An FC instance can be reclaimed or replaced as soon as an HTTP request
+    # returns. Complete RedNote processing before acknowledging the request.
+    if _is_rednote_url(download_url) and not text:
+        filename = process_in_background(download_url, original_url, title, text)
+        if filename:
+            return {"status": "ok", "message": f"✅ 已保存：{filename}", "filename": filename}
+        return {"status": "error", "message": "小红书内容处理失败，请查看 FC 日志"}
 
     print(f"🚀 收到请求: {download_url}，后台处理中...")
     thread = threading.Thread(
