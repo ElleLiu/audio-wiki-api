@@ -225,6 +225,21 @@ class UrlExtractionTests(unittest.TestCase):
         self.assertEqual(bucket.return_value.put_object.call_count, 2)
         self.assertEqual(ocr.call_count, 2)
 
+    def test_deduplicates_ytdlp_cover_variants_with_identical_ocr(self):
+        note = {"title": "测试", "description": "正文", "image_urls": ["cover-small", "cover-large"],
+                "images_from_thumbnails": True}
+        with (
+            patch.object(main, "_compress_and_upload_rednote_image", side_effect=[
+                ("assets/rednote/a.webp", b"small"), ("assets/rednote/b.webp", b"large")]),
+            patch.object(main, "_rednote_image_fingerprint", side_effect=[0, 0xffffffffffffffff]),
+            patch.object(main, "_ocr_rednote_image", return_value="39岁被裁一个月复盘说几句实话"),
+            patch.object(main, "get_oss_bucket") as bucket,
+        ):
+            result = main._save_rednote_images(note, "https://www.xiaohongshu.com/")
+        self.assertEqual(result["image_paths"], ["assets/rednote/a.webp"])
+        self.assertEqual(result["image_ocr"], ["39岁被裁一个月复盘说几句实话"])
+        bucket.return_value.put_object.assert_called_once()
+
     def test_saves_rednote_original_text_and_images_without_deepseek(self):
         note = {
             "title": "GPT Live 口语实践",
