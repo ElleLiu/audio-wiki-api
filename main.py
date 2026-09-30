@@ -4,6 +4,7 @@ import time
 import io
 import json
 import hashlib
+import base64
 import threading
 import tempfile
 import requests
@@ -25,6 +26,10 @@ OSS_ACCESS_KEY_SECRET = os.environ.get("OSS_ACCESS_KEY_SECRET")
 OSS_BUCKET_NAME       = os.environ.get("OSS_BUCKET_NAME", "obsidian-remotely-1121")
 OSS_ENDPOINT          = os.environ.get("OSS_ENDPOINT", "https://oss-cn-hongkong.aliyuncs.com")
 DASHSCOPE_BASE_URL    = os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
+DASHSCOPE_OCR_BASE_URL = os.environ.get(
+    "DASHSCOPE_OCR_BASE_URL",
+    DASHSCOPE_BASE_URL.rstrip("/").removesuffix("/api/v1") + "/compatible-mode/v1",
+)
 ZHIHU_COOKIE          = os.environ.get("ZHIHU_COOKIE", "")
 REDNOTE_COOKIES       = os.environ.get("REDNOTE_COOKIES", "")
 
@@ -373,7 +378,7 @@ def _rednote_headers(referer: str) -> dict:
     return headers
 
 
-def _compress_and_upload_rednote_image(image_url: str, referer: str) -> str:
+def _compress_and_upload_rednote_image(image_url: str, referer: str) -> tuple[str, bytes]:
     from PIL import Image, ImageOps
 
     # yt-dlp may expose an HTTP CDN URL; XHS's signed image endpoint expects HTTPS.
@@ -405,7 +410,29 @@ def _compress_and_upload_rednote_image(image_url: str, referer: str) -> str:
         headers={"Content-Type": "image/webp"},
     )
     print(f"🖼️ 小红书图片已压缩上传: {oss_key} ({len(image_bytes) / 1024:.0f} KB)")
-    return oss_key
+    return oss_key, image_bytes
+
+
+def _ocr_rednote_image(image_bytes: bytes) -> str:
+    """Transcribe visible text only, using the already configured DashScope key."""
+    ocr_client = OpenAI(
+        api_key=DASHSCOPE_API_KEY,
+        base_url=DASHSCOPE_OCR_BASE_URL,
+        timeout=45,
+        max_retries=1,
+    )
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    completion = ocr_client.chat.completions.create(
+        model="qwen-vl-ocr",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/webp;base64,{encoded}"}},
+                {"type": "text", "text": "逐行提取图片中可见的全部文字，保留原有顺序和换行。只输出文字，不要描述、总结或补写；无法辨认的字用 ? 表示。"},
+            ],
+        }],
+    )
+    return (completion.choices[0].message.content or "").strip()
 
 
 def fetch_rednote_post(url: str) -> dict:
@@ -478,11 +505,19 @@ def _fetch_rednote_post_with_ytdlp(url: str) -> dict:
 
 def _save_rednote_images(note: dict, referer: str) -> dict:
     image_paths = []
+    image_ocr = []
     for index, image_url in enumerate(note["image_urls"], start=1):
         try:
-            path = _compress_and_upload_rednote_image(image_url, referer)
+            path, image_bytes = _compress_and_upload_rednote_image(image_url, referer)
             if path not in image_paths:
                 image_paths.append(path)
+                try:
+                    ocr_text = _ocr_rednote_image(image_bytes)
+                    image_ocr.append(ocr_text or "（未识别到文字）")
+                    print(f"🔎 小红书第 {index} 张图片 OCR 完成: {len(ocr_text)} 字")
+                except Exception as exc:
+                    image_ocr.append("（OCR 识别失败，请查看原图）")
+                    print(f"⚠️ 小红书第 {index} 张图片 OCR 失败: {type(exc).__name__}: {exc}")
         except Exception as exc:
             print(f"⚠️ 小红书第 {index} 张图片处理失败: {exc}")
 
@@ -490,6 +525,7 @@ def _save_rednote_images(note: dict, referer: str) -> dict:
         print("⚠️ 小红书笔记既没有可用图片，也没有正文")
         return {}
     note["image_paths"] = image_paths
+    note["image_ocr"] = image_ocr
     print(
         f"✅ 小红书图文提取完成: {note['title']!r}, "
         f"正文 {len(note['description'])} 字, 图片 {len(image_paths)} 张"
@@ -635,14 +671,21 @@ _WEBPAGE_SECTION = """---
 
 """
 
-def _append_image_gallery(markdown: str, image_paths: list[str]) -> str:
+def _append_image_gallery(markdown: str, image_paths: list[str], image_ocr: Optional[list[str]] = None) -> str:
     if not image_paths:
         return markdown
     images = "\n\n".join(
         f"![小红书图片 {index}]({path})"
         for index, path in enumerate(image_paths, start=1)
     )
-    return f"{markdown.rstrip()}\n\n---\n\n## 原图\n\n{images}\n"
+    markdown = f"{markdown.rstrip()}\n\n---\n\n## 原图\n\n{images}\n"
+    if image_ocr is not None:
+        ocr_sections = "\n\n".join(
+            f"### 图片 {index}\n\n{ocr_text}"
+            for index, ocr_text in enumerate(image_ocr, start=1)
+        )
+        markdown += f"\n## 图片文字（OCR）\n\n{ocr_sections}\n"
+    return markdown
 
 
 def save_rednote_post(note: dict, source_url: str) -> str:
@@ -660,7 +703,7 @@ def save_rednote_post(note: dict, source_url: str) -> str:
         "## 原文\n\n"
         f"{description}\n"
     )
-    markdown = _append_image_gallery(markdown, note["image_paths"])
+    markdown = _append_image_gallery(markdown, note["image_paths"], note.get("image_ocr"))
 
     safe_title = "".join(
         c for c in title if c.isalnum() or c in (' ', '-', '_')
