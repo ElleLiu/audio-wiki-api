@@ -270,21 +270,29 @@ class UrlExtractionTests(unittest.TestCase):
         with (
             patch.object(main, "download_audio", return_value=(None, "", "", 0)),
             patch.object(main, "fetch_rednote_post", return_value=note),
-            patch.object(main, "save_rednote_post") as save_rednote,
+            patch.object(main, "save_rednote_post", return_value="图文标题.md") as save_rednote,
             patch.object(main, "generate_and_save_markdown") as generate_markdown,
         ):
-            main.process_in_background(
-                "https://xhslink.cn/o/example",
-                "https://xhslink.cn/o/example",
-                "未命名内容",
-                "",
-            )
+            with patch.object(main.threading, "Thread") as thread:
+                response = main.process_podcast_endpoint({"url": "https://xhslink.cn/o/example"})
 
+        self.assertEqual(response["status"], "ok")
+        self.assertEqual(response["filename"], "图文标题.md")
+        thread.assert_not_called()
         save_rednote.assert_called_once_with(
             note,
             "https://xhslink.cn/o/example",
         )
         generate_markdown.assert_not_called()
+
+    def test_rednote_failure_is_not_reported_as_accepted(self):
+        with (
+            patch.object(main, "download_audio", return_value=(None, "", "", 0)),
+            patch.object(main, "fetch_rednote_post", return_value={}),
+            patch.object(main, "fetch_webpage_text", return_value=("", "")),
+        ):
+            response = main.process_podcast_endpoint({"url": "https://xhslink.cn/o/example"})
+        self.assertEqual(response["status"], "error")
 
     def test_rednote_login_redirect_uses_ytdlp_image_metadata(self):
         class FakeYDL:
