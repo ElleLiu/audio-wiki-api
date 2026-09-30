@@ -405,6 +405,9 @@ def fetch_rednote_post(url: str) -> dict:
     try:
         response = requests.get(url, headers=_rednote_headers(url), timeout=30)
         response.raise_for_status()
+        if urlparse(response.url).path.startswith('/login'):
+            print("⚠️ 小红书网页请求跳转登录，改用 yt-dlp 已验证的 Cookie 抓取图文")
+            return _fetch_rednote_post_with_ytdlp(url)
         canonical_url = _canonical_rednote_url(response.url)
         if canonical_url != response.url:
             response = requests.get(
@@ -415,31 +418,73 @@ def fetch_rednote_post(url: str) -> dict:
             response.raise_for_status()
         note = _extract_rednote_note(response.text, response.url)
         if not note:
-            print("⚠️ 未从小红书页面提取到图文数据")
-            return {}
+            print("⚠️ 小红书网页未提取到图文数据，尝试 yt-dlp 元数据")
+            return _fetch_rednote_post_with_ytdlp(url)
 
-        image_paths = []
-        for index, image_url in enumerate(note["image_urls"], start=1):
-            try:
-                image_paths.append(
-                    _compress_and_upload_rednote_image(image_url, response.url)
-                )
-            except Exception as exc:
-                print(f"⚠️ 小红书第 {index} 张图片处理失败: {exc}")
-
-        if not image_paths and not note["description"]:
-            print("⚠️ 小红书笔记既没有可用图片，也没有正文")
-            return {}
-
-        note["image_paths"] = image_paths
-        print(
-            f"✅ 小红书图文提取完成: {note['title']!r}, "
-            f"正文 {len(note['description'])} 字, 图片 {len(image_paths)} 张"
-        )
-        return note
+        return _save_rednote_images(note, response.url)
     except Exception as exc:
-        print(f"❌ 小红书图文抓取失败: {type(exc).__name__}: {exc}")
+        print(f"⚠️ 小红书网页抓取失败: {type(exc).__name__}: {exc}，尝试 yt-dlp 元数据")
+        return _fetch_rednote_post_with_ytdlp(url)
+
+
+def _fetch_rednote_post_with_ytdlp(url: str) -> dict:
+    """yt-dlp can read image-note metadata even when no video formats exist."""
+    _, cookie_path = _download_site_options(url)
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "ignore_no_formats_error": True,
+        "skip_download": True,
+    }
+    if cookie_path:
+        options["cookiefile"] = cookie_path
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if not info or not info.get("id"):
+            print("⚠️ yt-dlp 未返回小红书笔记元数据")
+            return {}
+        thumbnails = info.get("thumbnails") or []
+        image_urls = list(dict.fromkeys(
+            thumbnail["url"] for thumbnail in thumbnails if thumbnail.get("url")
+        ))
+        upload_date = info.get("upload_date") or ""
+        publish_date = (
+            f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+            if len(upload_date) == 8 else datetime.now().strftime("%Y-%m-%d")
+        )
+        note = {
+            "id": info["id"],
+            "title": info.get("title") or "",
+            "description": info.get("description") or "",
+            "publish_date": publish_date,
+            "image_urls": image_urls,
+        }
+        return _save_rednote_images(note, url)
+    except Exception as exc:
+        print(f"❌ 小红书 yt-dlp 图文抓取失败: {type(exc).__name__}: {exc}")
         return {}
+
+
+def _save_rednote_images(note: dict, referer: str) -> dict:
+    image_paths = []
+    for index, image_url in enumerate(note["image_urls"], start=1):
+        try:
+            path = _compress_and_upload_rednote_image(image_url, referer)
+            if path not in image_paths:
+                image_paths.append(path)
+        except Exception as exc:
+            print(f"⚠️ 小红书第 {index} 张图片处理失败: {exc}")
+
+    if not image_paths and not note["description"]:
+        print("⚠️ 小红书笔记既没有可用图片，也没有正文")
+        return {}
+    note["image_paths"] = image_paths
+    print(
+        f"✅ 小红书图文提取完成: {note['title']!r}, "
+        f"正文 {len(note['description'])} 字, 图片 {len(image_paths)} 张"
+    )
+    return note
 
 # ================= 5. Fun-ASR 转写 =================
 def transcribe_with_funasr(audio_path: str) -> str:
