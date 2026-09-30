@@ -221,6 +221,42 @@ class UrlExtractionTests(unittest.TestCase):
         )
         generate_markdown.assert_not_called()
 
+    def test_rednote_login_redirect_uses_ytdlp_image_metadata(self):
+        class FakeYDL:
+            def __init__(self, options):
+                self.options = options
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def extract_info(self, url, download):
+                self_url = url
+                self.assert_download = download
+                return {
+                    "id": "6a9fa35300000000250372ae",
+                    "title": "被裁满一个月",
+                    "description": "投出数百份简历",
+                    "thumbnails": [{"url": "https://img.example/1.jpg"}],
+                }
+
+        response = types.SimpleNamespace(
+            url="https://www.xiaohongshu.com/login?redirectPath=...",
+            raise_for_status=lambda: None,
+        )
+        with (
+            patch.object(main.requests, "get", return_value=response),
+            patch.object(main, "_download_site_options", return_value=({}, "/tmp/rednote.txt")),
+            patch.object(main.yt_dlp, "YoutubeDL", FakeYDL),
+            patch.object(main, "_compress_and_upload_rednote_image", return_value="assets/rednote/1.webp"),
+        ):
+            note = main.fetch_rednote_post("https://xhslink.cn/o/vK1nRIGPP1")
+
+        self.assertEqual(note["title"], "被裁满一个月")
+        self.assertEqual(note["image_paths"], ["assets/rednote/1.webp"])
+
     def test_parses_httponly_netscape_cookie(self):
         cookies = (
             "# Netscape HTTP Cookie File\n"
