@@ -509,6 +509,7 @@ def _fetch_rednote_post_with_ytdlp(url: str) -> dict:
             "description": info.get("description") or "",
             "publish_date": publish_date,
             "image_urls": image_urls,
+            "images_from_thumbnails": True,
         }
         return _save_rednote_images(note, url)
     except Exception as exc:
@@ -520,6 +521,7 @@ def _save_rednote_images(note: dict, referer: str) -> dict:
     image_paths = []
     image_ocr = []
     fingerprints = []
+    seen_thumbnail_text = set()
     for index, image_url in enumerate(note["image_urls"], start=1):
         try:
             path, image_bytes = _compress_and_upload_rednote_image(image_url, referer)
@@ -529,17 +531,26 @@ def _save_rednote_images(note: dict, referer: str) -> dict:
             if any((fingerprint ^ previous).bit_count() <= 2 for previous in fingerprints):
                 print(f"⏭️ 小红书第 {index} 张图片与已有图片重复，跳过")
                 continue
+            try:
+                ocr_text = _ocr_rednote_image(image_bytes)
+            except Exception as exc:
+                ocr_text = "（OCR 识别失败，请查看原图）"
+                print(f"⚠️ 小红书第 {index} 张图片 OCR 失败: {type(exc).__name__}: {exc}")
+            # yt-dlp thumbnails are often multiple CDN renditions of one cover.
+            # Identical recognized text catches crops that differ too much for dHash.
+            if (note.get("images_from_thumbnails") and len(ocr_text) >= 8
+                    and ocr_text in seen_thumbnail_text
+                    and not ocr_text.startswith("（OCR")):
+                print(f"⏭️ 小红书第 {index} 张缩略图 OCR 与封面相同，跳过")
+                continue
             get_oss_bucket().put_object(path, image_bytes, headers={"Content-Type": "image/webp"})
             print(f"🖼️ 小红书图片已压缩上传: {path} ({len(image_bytes) / 1024:.0f} KB)")
             image_paths.append(path)
             fingerprints.append(fingerprint)
-            try:
-                ocr_text = _ocr_rednote_image(image_bytes)
-                image_ocr.append(ocr_text or "（未识别到文字）")
-                print(f"🔎 小红书第 {index} 张图片 OCR 完成: {len(ocr_text)} 字")
-            except Exception as exc:
-                image_ocr.append("（OCR 识别失败，请查看原图）")
-                print(f"⚠️ 小红书第 {index} 张图片 OCR 失败: {type(exc).__name__}: {exc}")
+            image_ocr.append(ocr_text or "（未识别到文字）")
+            if ocr_text and not ocr_text.startswith("（OCR"):
+                seen_thumbnail_text.add(ocr_text)
+            print(f"🔎 小红书第 {index} 张图片 OCR 完成: {len(ocr_text)} 字")
         except Exception as exc:
             print(f"⚠️ 小红书第 {index} 张图片处理失败: {exc}")
 
