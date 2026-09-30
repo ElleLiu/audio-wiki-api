@@ -404,35 +404,48 @@ def _compress_and_upload_rednote_image(image_url: str, referer: str) -> tuple[st
     image_bytes = output.getvalue()
     digest = hashlib.sha256(image_bytes).hexdigest()[:20]
     oss_key = f"assets/rednote/{digest}.webp"
-    get_oss_bucket().put_object(
-        oss_key,
-        image_bytes,
-        headers={"Content-Type": "image/webp"},
-    )
-    print(f"🖼️ 小红书图片已压缩上传: {oss_key} ({len(image_bytes) / 1024:.0f} KB)")
+    # Upload after image deduplication in _save_rednote_images.
     return oss_key, image_bytes
 
 
+def _rednote_image_fingerprint(image_bytes: bytes) -> int:
+    """Small difference hash; CDN renditions of the same photo may encode differently."""
+    from PIL import Image, ImageOps
+
+    with Image.open(io.BytesIO(image_bytes)) as source:
+        image = ImageOps.grayscale(source).resize((9, 8), Image.Resampling.LANCZOS)
+        pixels = list(image.getdata())
+    bits = 0
+    for row in range(8):
+        for col in range(8):
+            bits = (bits << 1) | (pixels[row * 9 + col] > pixels[row * 9 + col + 1])
+    return bits
+
+
 def _ocr_rednote_image(image_bytes: bytes) -> str:
-    """Transcribe visible text only, using the already configured DashScope key."""
-    ocr_client = OpenAI(
-        api_key=DASHSCOPE_API_KEY,
-        base_url=DASHSCOPE_OCR_BASE_URL,
-        timeout=45,
-        max_retries=1,
-    )
+    """Use the dedicated plain-text OCR task, not free-form visual localization."""
     encoded = base64.b64encode(image_bytes).decode("ascii")
-    completion = ocr_client.chat.completions.create(
-        model="qwen-vl-ocr",
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/webp;base64,{encoded}"}},
-                {"type": "text", "text": "逐行提取图片中可见的全部文字，保留原有顺序和换行。只输出文字，不要描述、总结或补写；无法辨认的字用 ? 表示。"},
-            ],
-        }],
+    response = requests.post(
+        DASHSCOPE_BASE_URL.rstrip("/") + "/services/aigc/multimodal-generation/generation",
+        headers={"Authorization": f"Bearer {DASHSCOPE_API_KEY}", "Content-Type": "application/json"},
+        json={
+            "model": "qwen-vl-ocr",
+            "input": {"messages": [{"role": "user", "content": [
+                {"image": f"data:image/webp;base64,{encoded}"},
+            ]}]},
+            "parameters": {"ocr_options": {"task": "text_recognition"}},
+        },
+        timeout=60,
     )
-    return (completion.choices[0].message.content or "").strip()
+    response.raise_for_status()
+    result = response.json()
+    if result.get("code"):
+        raise ValueError(f"OCR API: {result['code']}")
+    content = result["output"]["choices"][0]["message"]["content"]
+    text = "\n".join(part["text"] for part in content if "text" in part).strip()
+    if text and all(re.fullmatch(r"\d+(?:,\d+){4,}", line.strip()) for line in text.splitlines()):
+        raise ValueError("OCR returned image coordinates instead of text")
+    return text
 
 
 def fetch_rednote_post(url: str) -> dict:
@@ -506,18 +519,27 @@ def _fetch_rednote_post_with_ytdlp(url: str) -> dict:
 def _save_rednote_images(note: dict, referer: str) -> dict:
     image_paths = []
     image_ocr = []
+    fingerprints = []
     for index, image_url in enumerate(note["image_urls"], start=1):
         try:
             path, image_bytes = _compress_and_upload_rednote_image(image_url, referer)
-            if path not in image_paths:
-                image_paths.append(path)
-                try:
-                    ocr_text = _ocr_rednote_image(image_bytes)
-                    image_ocr.append(ocr_text or "（未识别到文字）")
-                    print(f"🔎 小红书第 {index} 张图片 OCR 完成: {len(ocr_text)} 字")
-                except Exception as exc:
-                    image_ocr.append("（OCR 识别失败，请查看原图）")
-                    print(f"⚠️ 小红书第 {index} 张图片 OCR 失败: {type(exc).__name__}: {exc}")
+            if path in image_paths:
+                continue
+            fingerprint = _rednote_image_fingerprint(image_bytes)
+            if any((fingerprint ^ previous).bit_count() <= 2 for previous in fingerprints):
+                print(f"⏭️ 小红书第 {index} 张图片与已有图片重复，跳过")
+                continue
+            get_oss_bucket().put_object(path, image_bytes, headers={"Content-Type": "image/webp"})
+            print(f"🖼️ 小红书图片已压缩上传: {path} ({len(image_bytes) / 1024:.0f} KB)")
+            image_paths.append(path)
+            fingerprints.append(fingerprint)
+            try:
+                ocr_text = _ocr_rednote_image(image_bytes)
+                image_ocr.append(ocr_text or "（未识别到文字）")
+                print(f"🔎 小红书第 {index} 张图片 OCR 完成: {len(ocr_text)} 字")
+            except Exception as exc:
+                image_ocr.append("（OCR 识别失败，请查看原图）")
+                print(f"⚠️ 小红书第 {index} 张图片 OCR 失败: {type(exc).__name__}: {exc}")
         except Exception as exc:
             print(f"⚠️ 小红书第 {index} 张图片处理失败: {exc}")
 
@@ -690,7 +712,9 @@ def _append_image_gallery(markdown: str, image_paths: list[str], image_ocr: Opti
 
 def save_rednote_post(note: dict, source_url: str) -> str:
     title = note["title"] or "未命名小红书笔记"
-    description = note["description"]
+    description = re.sub(
+        r"(?:\s*#[^#\n]+?\s*\[话题\]#)+\s*$", "", note["description"]
+    ).rstrip()
     publish_date = note["publish_date"]
     markdown = (
         "---\n"
