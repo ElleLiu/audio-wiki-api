@@ -257,6 +257,47 @@ class UrlExtractionTests(unittest.TestCase):
         self.assertEqual(note["title"], "被裁满一个月")
         self.assertEqual(note["image_paths"], ["assets/rednote/1.webp"])
 
+    def test_rednote_placeholder_title_uses_description(self):
+        class FakeYDL:
+            def __init__(self, options):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def extract_info(self, url, download):
+                return {
+                    "id": "6a9fa35300000000250372ae",
+                    "title": "XiaoHongShu video #6a9fa35300000000250372ae",
+                    "description": "被裁满一个月。投出数百份简历\n正文",
+                    "thumbnails": [],
+                }
+
+        with (
+            patch.object(main, "_download_site_options", return_value=({}, None)),
+            patch.object(main.yt_dlp, "YoutubeDL", FakeYDL),
+        ):
+            note = main._fetch_rednote_post_with_ytdlp("https://xhslink.cn/o/example")
+
+        self.assertEqual(note["title"], "被裁满一个月。投出数百份简历")
+
+    def test_rednote_image_uses_https_and_site_referer(self):
+        response = types.SimpleNamespace(
+            content=b"image",
+            raise_for_status=lambda: (_ for _ in ()).throw(ValueError("stop")),
+        )
+        with patch.object(main.requests, "get", return_value=response) as get:
+            with self.assertRaises(ValueError):
+                main._compress_and_upload_rednote_image(
+                    "http://sns-webpic-qc.xhscdn.com/image", "https://xhslink.cn/o/example"
+                )
+        args, kwargs = get.call_args
+        self.assertEqual(args[0], "https://sns-webpic-qc.xhscdn.com/image")
+        self.assertEqual(kwargs["headers"]["Referer"], "https://www.xiaohongshu.com/")
+
     def test_parses_httponly_netscape_cookie(self):
         cookies = (
             "# Netscape HTTP Cookie File\n"
