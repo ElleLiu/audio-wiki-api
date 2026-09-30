@@ -376,7 +376,14 @@ def _rednote_headers(referer: str) -> dict:
 def _compress_and_upload_rednote_image(image_url: str, referer: str) -> str:
     from PIL import Image, ImageOps
 
-    response = requests.get(image_url, headers=_rednote_headers(referer), timeout=30)
+    # yt-dlp may expose an HTTP CDN URL; XHS's signed image endpoint expects HTTPS.
+    if urlparse(image_url).scheme == "http":
+        image_url = "https" + image_url[4:]
+    response = requests.get(
+        image_url,
+        headers=_rednote_headers("https://www.xiaohongshu.com/"),
+        timeout=30,
+    )
     response.raise_for_status()
     if len(response.content) > 20 * 1024 * 1024:
         raise ValueError("图片超过 20MB")
@@ -453,9 +460,12 @@ def _fetch_rednote_post_with_ytdlp(url: str) -> dict:
             f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
             if len(upload_date) == 8 else datetime.now().strftime("%Y-%m-%d")
         )
+        title = info.get("title") or ""
+        if re.fullmatch(r"XiaoHongShu video #[0-9a-f]+", title, re.IGNORECASE):
+            title = (info.get("description") or "").splitlines()[0].strip()[:80]
         note = {
             "id": info["id"],
-            "title": info.get("title") or "",
+            "title": title,
             "description": info.get("description") or "",
             "publish_date": publish_date,
             "image_urls": image_urls,
