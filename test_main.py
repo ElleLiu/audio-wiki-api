@@ -1,4 +1,5 @@
 import os
+import io
 import sys
 import types
 import unittest
@@ -181,6 +182,8 @@ class UrlExtractionTests(unittest.TestCase):
         note = {"title": "测试", "description": "正文", "image_urls": ["https://img.example/1.jpg"]}
         with (
             patch.object(main, "_compress_and_upload_rednote_image", return_value=("assets/rednote/a.webp", b"webp")),
+            patch.object(main, "_rednote_image_fingerprint", return_value=1),
+            patch.object(main, "get_oss_bucket"),
             patch.object(main, "_ocr_rednote_image", side_effect=RuntimeError("unavailable")),
         ):
             result = main._save_rednote_images(note, "https://www.xiaohongshu.com/")
@@ -188,16 +191,39 @@ class UrlExtractionTests(unittest.TestCase):
         self.assertEqual(result["image_ocr"], ["（OCR 识别失败，请查看原图）"])
 
     def test_ocr_sends_webp_bytes_and_preserves_transcription(self):
-        mock_completion = types.SimpleNamespace(
-            choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="图中文字\n第二行"))]
+        response = types.SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"output": {"choices": [{"message": {"content": [{"text": "图中文字\n第二行"}]}}]}},
         )
-        mock_client = types.SimpleNamespace(
-            chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **kwargs: mock_completion))
-        )
-        with patch.object(main, "OpenAI", return_value=mock_client) as make_client:
+        with patch.object(main.requests, "post", return_value=response) as post:
             text = main._ocr_rednote_image(b"webp")
         self.assertEqual(text, "图中文字\n第二行")
-        self.assertEqual(make_client.call_args.kwargs["base_url"], main.DASHSCOPE_OCR_BASE_URL)
+        self.assertEqual(post.call_args.kwargs["json"]["parameters"]["ocr_options"]["task"], "text_recognition")
+
+    def test_rejects_coordinate_only_ocr_output(self):
+        response = types.SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"output": {"choices": [{"message": {"content": [{"text": "374,292,91,511,90\n454,428,95,663,90"}]}}]}},
+        )
+        with patch.object(main.requests, "post", return_value=response):
+            with self.assertRaisesRegex(ValueError, "coordinates"):
+                main._ocr_rednote_image(b"webp")
+
+    def test_deduplicates_similar_images_before_upload_and_ocr(self):
+        note = {"title": "测试", "description": "正文", "image_urls": ["one", "two", "three"]}
+        images = [("assets/rednote/a.webp", b"first"),
+                  ("assets/rednote/b.webp", b"variant"),
+                  ("assets/rednote/c.webp", b"different")]
+        with (
+            patch.object(main, "_compress_and_upload_rednote_image", side_effect=images),
+            patch.object(main, "_rednote_image_fingerprint", side_effect=[0, 1, 0xffffffffffffffff]),
+            patch.object(main, "get_oss_bucket") as bucket,
+            patch.object(main, "_ocr_rednote_image", return_value="文字") as ocr,
+        ):
+            result = main._save_rednote_images(note, "https://www.xiaohongshu.com/")
+        self.assertEqual(result["image_paths"], [images[0][0], images[2][0]])
+        self.assertEqual(bucket.return_value.put_object.call_count, 2)
+        self.assertEqual(ocr.call_count, 2)
 
     def test_saves_rednote_original_text_and_images_without_deepseek(self):
         note = {
@@ -223,6 +249,15 @@ class UrlExtractionTests(unittest.TestCase):
         self.assertIn("![小红书图片 1](assets/rednote/a.webp)", markdown)
         self.assertNotIn("SCQA", markdown)
         self.assertNotIn("核心脉络", markdown)
+
+    def test_removes_trailing_rednote_topic_tags_from_original_text(self):
+        note = {"title": "标题", "description": "正文里有 #技术 讨论。\n一起加油。\n#失业后的状态 [话题]# #裁员 [话题]#",
+                "publish_date": "2026-09-30", "image_paths": []}
+        with patch.object(main, "save_markdown_to_oss") as save:
+            main.save_rednote_post(note, "https://xhslink.cn/o/example")
+        markdown = save.call_args.args[0]
+        self.assertIn("正文里有 #技术 讨论。\n一起加油。", markdown)
+        self.assertNotIn("[话题]", markdown)
 
     def test_rednote_image_post_skips_deepseek_pipeline(self):
         note = {
@@ -281,6 +316,8 @@ class UrlExtractionTests(unittest.TestCase):
             patch.object(main, "_download_site_options", return_value=({}, "/tmp/rednote.txt")),
             patch.object(main.yt_dlp, "YoutubeDL", FakeYDL),
             patch.object(main, "_compress_and_upload_rednote_image", return_value=("assets/rednote/1.webp", b"webp")),
+            patch.object(main, "_rednote_image_fingerprint", return_value=1),
+            patch.object(main, "get_oss_bucket"),
             patch.object(main, "_ocr_rednote_image", return_value="图片文字"),
         ):
             note = main.fetch_rednote_post("https://xhslink.cn/o/vK1nRIGPP1")
