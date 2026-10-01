@@ -448,13 +448,13 @@ def _ocr_rednote_image(image_bytes: bytes) -> str:
     return text
 
 
-def fetch_rednote_post(url: str) -> dict:
+def fetch_rednote_post(url: str, *, save_images: bool = False, enable_ocr: bool = False) -> dict:
     try:
         response = requests.get(url, headers=_rednote_headers(url), timeout=30)
         response.raise_for_status()
         if urlparse(response.url).path.startswith('/login'):
             print("⚠️ 小红书网页请求跳转登录，改用 yt-dlp 已验证的 Cookie 抓取图文")
-            return _fetch_rednote_post_with_ytdlp(url)
+            return _fetch_rednote_post_with_ytdlp(url, save_images=save_images, enable_ocr=enable_ocr)
         canonical_url = _canonical_rednote_url(response.url)
         if canonical_url != response.url:
             response = requests.get(
@@ -466,15 +466,15 @@ def fetch_rednote_post(url: str) -> dict:
         note = _extract_rednote_note(response.text, response.url)
         if not note:
             print("⚠️ 小红书网页未提取到图文数据，尝试 yt-dlp 元数据")
-            return _fetch_rednote_post_with_ytdlp(url)
+            return _fetch_rednote_post_with_ytdlp(url, save_images=save_images, enable_ocr=enable_ocr)
 
-        return _save_rednote_images(note, response.url)
+        return _save_rednote_images(note, response.url, save_images=save_images, enable_ocr=enable_ocr)
     except Exception as exc:
         print(f"⚠️ 小红书网页抓取失败: {type(exc).__name__}: {exc}，尝试 yt-dlp 元数据")
-        return _fetch_rednote_post_with_ytdlp(url)
+        return _fetch_rednote_post_with_ytdlp(url, save_images=save_images, enable_ocr=enable_ocr)
 
 
-def _fetch_rednote_post_with_ytdlp(url: str) -> dict:
+def _fetch_rednote_post_with_ytdlp(url: str, *, save_images: bool = False, enable_ocr: bool = False) -> dict:
     """yt-dlp can read image-note metadata even when no video formats exist."""
     _, cookie_path = _download_site_options(url)
     options = {
@@ -511,31 +511,35 @@ def _fetch_rednote_post_with_ytdlp(url: str) -> dict:
             "image_urls": image_urls,
             "images_from_thumbnails": True,
         }
-        return _save_rednote_images(note, url)
+        return _save_rednote_images(note, url, save_images=save_images, enable_ocr=enable_ocr)
     except Exception as exc:
         print(f"❌ 小红书 yt-dlp 图文抓取失败: {type(exc).__name__}: {exc}")
         return {}
 
 
-def _save_rednote_images(note: dict, referer: str) -> dict:
+def _save_rednote_images(note: dict, referer: str, *, save_images: bool = False, enable_ocr: bool = False) -> dict:
     image_paths = []
     image_ocr = []
     fingerprints = []
     seen_thumbnail_text = set()
-    for index, image_url in enumerate(note["image_urls"], start=1):
+    seen_paths = set()
+    image_urls = note["image_urls"] if save_images or enable_ocr else []
+    for index, image_url in enumerate(image_urls, start=1):
         try:
             path, image_bytes = _compress_and_upload_rednote_image(image_url, referer)
-            if path in image_paths:
+            if path in seen_paths:
                 continue
             fingerprint = _rednote_image_fingerprint(image_bytes)
             if any((fingerprint ^ previous).bit_count() <= 2 for previous in fingerprints):
                 print(f"⏭️ 小红书第 {index} 张图片与已有图片重复，跳过")
                 continue
-            try:
-                ocr_text = _ocr_rednote_image(image_bytes)
-            except Exception as exc:
-                ocr_text = "（OCR 识别失败，请查看原图）"
-                print(f"⚠️ 小红书第 {index} 张图片 OCR 失败: {type(exc).__name__}: {exc}")
+            ocr_text = ""
+            if enable_ocr:
+                try:
+                    ocr_text = _ocr_rednote_image(image_bytes).strip()
+                except Exception as exc:
+                    ocr_text = "（OCR 识别失败）"
+                    print(f"⚠️ 小红书第 {index} 张图片 OCR 失败: {type(exc).__name__}: {exc}")
             # yt-dlp thumbnails are often multiple CDN renditions of one cover.
             # Identical recognized text catches crops that differ too much for dHash.
             if (note.get("images_from_thumbnails") and len(ocr_text) >= 8
@@ -543,18 +547,23 @@ def _save_rednote_images(note: dict, referer: str) -> dict:
                     and not ocr_text.startswith("（OCR")):
                 print(f"⏭️ 小红书第 {index} 张缩略图 OCR 与封面相同，跳过")
                 continue
-            get_oss_bucket().put_object(path, image_bytes, headers={"Content-Type": "image/webp"})
-            print(f"🖼️ 小红书图片已压缩上传: {path} ({len(image_bytes) / 1024:.0f} KB)")
-            image_paths.append(path)
+            if save_images:
+                get_oss_bucket().put_object(path, image_bytes, headers={"Content-Type": "image/webp"})
+                print(f"🖼️ 小红书图片已压缩上传: {path} ({len(image_bytes) / 1024:.0f} KB)")
+                image_paths.append(path)
+            seen_paths.add(path)
             fingerprints.append(fingerprint)
-            image_ocr.append(ocr_text or "（未识别到文字）")
+            if enable_ocr:
+                image_ocr.append(ocr_text)
             if ocr_text and not ocr_text.startswith("（OCR"):
                 seen_thumbnail_text.add(ocr_text)
-            print(f"🔎 小红书第 {index} 张图片 OCR 完成: {len(ocr_text)} 字")
+            if enable_ocr:
+                print(f"🔎 小红书第 {index} 张图片 OCR 完成: {len(ocr_text)} 字")
         except Exception as exc:
             print(f"⚠️ 小红书第 {index} 张图片处理失败: {exc}")
 
-    if not image_paths and not note["description"]:
+    has_ocr_text = any(text and not text.startswith("（OCR") for text in image_ocr)
+    if not image_paths and not note["description"] and not has_ocr_text:
         print("⚠️ 小红书笔记既没有可用图片，也没有正文")
         return {}
     note["image_paths"] = image_paths
@@ -705,19 +714,19 @@ _WEBPAGE_SECTION = """---
 """
 
 def _append_image_gallery(markdown: str, image_paths: list[str], image_ocr: Optional[list[str]] = None) -> str:
-    if not image_paths:
-        return markdown
-    images = "\n\n".join(
-        f"![小红书图片 {index}]({path})"
-        for index, path in enumerate(image_paths, start=1)
-    )
-    markdown = f"{markdown.rstrip()}\n\n---\n\n## 原图\n\n{images}\n"
-    if image_ocr is not None:
-        ocr_sections = "\n\n".join(
-            f"### 图片 {index}\n\n{ocr_text}"
-            for index, ocr_text in enumerate(image_ocr, start=1)
+    if image_paths:
+        images = "\n\n".join(
+            f"![小红书图片 {index}]({path})"
+            for index, path in enumerate(image_paths, start=1)
         )
-        markdown += f"\n## 图片文字（OCR）\n\n{ocr_sections}\n"
+        markdown = f"{markdown.rstrip()}\n\n---\n\n## 原图\n\n{images}\n"
+    ocr_sections = "\n\n".join(
+        f"### 图片 {index}\n\n{ocr_text}"
+        for index, ocr_text in enumerate(image_ocr or [], start=1)
+        if ocr_text.strip()
+    )
+    if ocr_sections:
+        markdown = f"{markdown.rstrip()}\n\n## 图片文字（OCR）\n\n{ocr_sections}\n"
     return markdown
 
 
@@ -793,7 +802,7 @@ def generate_and_save_markdown(raw_text: str, title: str, source_url: str, publi
     print(f"✅ 全部完成！文件: {filename}")
     return filename
 
-def process_in_background(download_url: str, original_url: str, title: str, text: str):
+def process_in_background(download_url: str, original_url: str, title: str, text: str, *, save_images: bool = False, enable_ocr: bool = False):
     current_date = datetime.now().strftime("%Y-%m-%d")
     publish_date = current_date
     duration = 0
@@ -807,7 +816,7 @@ def process_in_background(download_url: str, original_url: str, title: str, text
             with tempfile.TemporaryDirectory(prefix="audio-wiki-download-") as download_dir:
                 mp3_path, detected_title, publish_date, duration = download_audio(download_url, download_dir)
                 if not mp3_path:
-                    rednote = fetch_rednote_post(download_url) if _is_rednote_url(download_url) else {}
+                    rednote = fetch_rednote_post(download_url, save_images=save_images, enable_ocr=enable_ocr) if _is_rednote_url(download_url) else {}
                     if rednote:
                         return save_rednote_post(rednote, original_url)
                     else:
@@ -866,7 +875,14 @@ def process_podcast_endpoint(req: dict):
     # An FC instance can be reclaimed or replaced as soon as an HTTP request
     # returns. Complete RedNote processing before acknowledging the request.
     if _is_rednote_url(download_url) and not text:
-        filename = process_in_background(download_url, original_url, title, text)
+        save_images = req.get("save_images", False)
+        enable_ocr = req.get("enable_ocr", False)
+        if type(save_images) is not bool or type(enable_ocr) is not bool:
+            return {"status": "error", "message": "save_images 和 enable_ocr 必须是 JSON 布尔值 true/false"}
+        filename = process_in_background(
+            download_url, original_url, title, text,
+            save_images=save_images, enable_ocr=enable_ocr,
+        )
         if filename:
             return {"status": "ok", "message": f"✅ 已保存：{filename}", "filename": filename}
         return {"status": "error", "message": "小红书内容处理失败，请查看 FC 日志"}

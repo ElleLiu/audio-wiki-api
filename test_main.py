@@ -186,9 +186,64 @@ class UrlExtractionTests(unittest.TestCase):
             patch.object(main, "get_oss_bucket"),
             patch.object(main, "_ocr_rednote_image", side_effect=RuntimeError("unavailable")),
         ):
-            result = main._save_rednote_images(note, "https://www.xiaohongshu.com/")
+            result = main._save_rednote_images(note, "https://www.xiaohongshu.com/", save_images=True, enable_ocr=True)
         self.assertEqual(result["image_paths"], ["assets/rednote/a.webp"])
-        self.assertEqual(result["image_ocr"], ["（OCR 识别失败，请查看原图）"])
+        self.assertEqual(result["image_ocr"], ["（OCR 识别失败）"])
+
+    def test_media_options_control_image_download_upload_and_ocr(self):
+        for save_images, enable_ocr in [(False, False), (False, True), (True, False), (True, True)]:
+            with self.subTest(save_images=save_images, enable_ocr=enable_ocr):
+                note = {"title": "测试", "description": "正文", "image_urls": ["https://img.example/1.jpg"]}
+                with (
+                    patch.object(main, "_compress_and_upload_rednote_image", return_value=("assets/rednote/a.webp", b"webp")) as prepare,
+                    patch.object(main, "_rednote_image_fingerprint", return_value=1),
+                    patch.object(main, "get_oss_bucket") as bucket,
+                    patch.object(main, "_ocr_rednote_image", return_value="图片文字") as ocr,
+                ):
+                    result = main._save_rednote_images(note, "https://www.xiaohongshu.com/",
+                                                      save_images=save_images, enable_ocr=enable_ocr)
+                self.assertEqual(prepare.call_count, int(save_images or enable_ocr))
+                self.assertEqual(bucket.call_count, int(save_images))
+                self.assertEqual(ocr.call_count, int(enable_ocr))
+                self.assertEqual(result["image_paths"], ["assets/rednote/a.webp"] if save_images else [])
+                self.assertEqual(result["image_ocr"], ["图片文字"] if enable_ocr else [])
+
+    def test_media_options_pass_from_endpoint_to_fetcher(self):
+        for options in [{}, {"save_images": True}, {"enable_ocr": True},
+                        {"save_images": True, "enable_ocr": True}]:
+            with (
+                self.subTest(options=options),
+                patch.object(main, "download_audio", return_value=(None, "", "", 0)),
+                patch.object(main, "fetch_rednote_post", return_value={"title": "测试"}) as fetch,
+                patch.object(main, "save_rednote_post", return_value="测试.md"),
+            ):
+                response = main.process_podcast_endpoint({"url": "https://xhslink.cn/o/example", **options})
+                self.assertEqual(response["status"], "ok")
+                fetch.assert_called_once_with("https://xhslink.cn/o/example",
+                                              save_images=options.get("save_images", False),
+                                              enable_ocr=options.get("enable_ocr", False))
+
+    def test_string_flags_are_rejected_without_processing(self):
+        with patch.object(main, "process_in_background") as process:
+            response = main.process_podcast_endpoint({"url": "https://xhslink.cn/o/example", "save_images": "false"})
+        self.assertEqual(response["status"], "error")
+        process.assert_not_called()
+
+    def test_ocr_only_note_saves_text_without_image_gallery(self):
+        note = {"title": "测试", "description": "", "publish_date": "2026-10-01",
+                "image_paths": [], "image_ocr": ["", "图片中的文字"]}
+        with patch.object(main, "save_markdown_to_oss") as save:
+            main.save_rednote_post(note, "https://xhslink.cn/o/example")
+        markdown = save.call_args.args[0]
+        self.assertIn("### 图片 2\n\n图片中的文字", markdown)
+        self.assertNotIn("## 原图", markdown)
+        self.assertNotIn("![", markdown)
+        self.assertNotIn("### 图片 1", markdown)
+
+    def test_photo_with_no_text_has_no_empty_ocr_section(self):
+        markdown = main._append_image_gallery("正文", ["assets/rednote/a.webp"], ["", "  "])
+        self.assertIn("## 原图", markdown)
+        self.assertNotIn("图片文字（OCR）", markdown)
 
     def test_ocr_sends_webp_bytes_and_preserves_transcription(self):
         response = types.SimpleNamespace(
@@ -220,7 +275,7 @@ class UrlExtractionTests(unittest.TestCase):
             patch.object(main, "get_oss_bucket") as bucket,
             patch.object(main, "_ocr_rednote_image", return_value="文字") as ocr,
         ):
-            result = main._save_rednote_images(note, "https://www.xiaohongshu.com/")
+            result = main._save_rednote_images(note, "https://www.xiaohongshu.com/", save_images=True, enable_ocr=True)
         self.assertEqual(result["image_paths"], [images[0][0], images[2][0]])
         self.assertEqual(bucket.return_value.put_object.call_count, 2)
         self.assertEqual(ocr.call_count, 2)
@@ -235,7 +290,7 @@ class UrlExtractionTests(unittest.TestCase):
             patch.object(main, "_ocr_rednote_image", return_value="39岁被裁一个月复盘说几句实话"),
             patch.object(main, "get_oss_bucket") as bucket,
         ):
-            result = main._save_rednote_images(note, "https://www.xiaohongshu.com/")
+            result = main._save_rednote_images(note, "https://www.xiaohongshu.com/", save_images=True, enable_ocr=True)
         self.assertEqual(result["image_paths"], ["assets/rednote/a.webp"])
         self.assertEqual(result["image_ocr"], ["39岁被裁一个月复盘说几句实话"])
         bucket.return_value.put_object.assert_called_once()
@@ -343,7 +398,7 @@ class UrlExtractionTests(unittest.TestCase):
             patch.object(main, "get_oss_bucket"),
             patch.object(main, "_ocr_rednote_image", return_value="图片文字"),
         ):
-            note = main.fetch_rednote_post("https://xhslink.cn/o/vK1nRIGPP1")
+            note = main.fetch_rednote_post("https://xhslink.cn/o/vK1nRIGPP1", save_images=True, enable_ocr=True)
 
         self.assertEqual(note["title"], "被裁满一个月")
         self.assertEqual(note["image_paths"], ["assets/rednote/1.webp"])
