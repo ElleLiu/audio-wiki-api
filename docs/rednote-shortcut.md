@@ -19,7 +19,11 @@ OCR 关闭时不调用 OCR；保存图片关闭时不上传图片。OCR 单独�
 4. 每个分支都用“设定变量”将字典存为同一个变量 `保存选项`。
 5. 菜单结束后，分别用“获取字典值”从 `保存选项` 读取这两项，并设置变量 `保存图片`、`识别文字`。
 6. 在现有“获取 URL 内容”操作中保持 POST、请求体 JSON 及原有 url/title/original_url 字段，添加 `save_images` 与 `enable_ocr` 两个字段，类型为“布尔值”，值分别插入 `保存图片`、`识别文字`。
-7. 读取响应的 `status` 和 `message`；显示 `message`。`status=error` 表示未保存成功，`status=ok` 表示已写入 OSS。
+7. 加入“生成 UUID”，保存为变量 `任务ID`，并在 POST 的 JSON 中添加 `task_id`，值为 `任务ID`。
+8. 在 POST 请求头中添加 `X-Fc-Invocation-Type`，值为 `Async`。FC 会返回空的 `202 Accepted`，不要再从这个响应读取 `status` 或 `message`。
+9. POST 后使用“重复”循环，每次先等待 5 秒，再 GET：`https://audio-wiki-api-pedfgmuuew.cn-hongkong.fcapp.run/api/tasks/任务ID`。
+10. 读取查询响应的 `status`：`queued` 或 `processing` 时继续；`succeeded` 时显示 `message` 并停止快捷指令；`failed` 时显示错误并停止快捷指令。
+11. 建议最多重复 120 次（约 10 分钟）。循环结束仍未完成时显示“任务仍在后台处理，请稍后同步 Obsidian”，不要自动重提原链接。
 
 如某版本的“获取 URL 内容”无法把变量填入布尔字段，可在每个菜单分支直接调用 POST，两个布尔值在该分支中固定按表设置。
 
@@ -30,8 +34,20 @@ OCR 关闭时不调用 OCR；保存图片关闭时不上传图片。OCR 单独�
 ```json
 {
   "url": "https://xhslink.cn/o/example",
+  "task_id": "快捷指令生成的 UUID",
   "save_images": false,
   "enable_ocr": true
+}
+```
+
+状态查询成功示例：
+
+```json
+{
+  "task_id": "快捷指令生成的 UUID",
+  "status": "succeeded",
+  "filename": "示例笔记.md",
+  "message": "✅ 已保存：示例笔记.md"
 }
 ```
 

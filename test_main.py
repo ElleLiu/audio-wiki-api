@@ -22,6 +22,9 @@ except ImportError:
         def post(self, _path):
             return lambda function: function
 
+        def get(self, _path):
+            return lambda function: function
+
     sys.modules["fastapi"] = types.SimpleNamespace(FastAPI=_FastAPI)
 
 try:
@@ -228,6 +231,85 @@ class UrlExtractionTests(unittest.TestCase):
             response = main.process_podcast_endpoint({"url": "https://xhslink.cn/o/example", "save_images": "false"})
         self.assertEqual(response["status"], "error")
         process.assert_not_called()
+
+    def test_tracked_task_records_success(self):
+        with (
+            patch.object(main, "save_task_status", side_effect=lambda task_id, status, **details: {
+                "task_id": task_id, "status": status, **details,
+            }) as save_status,
+            patch.object(main, "process_in_background", return_value="测试.md") as process,
+        ):
+            response = main.process_podcast_endpoint({
+                "url": "https://xhslink.cn/o/example",
+                "task_id": "12345678-abcd",
+                "save_images": True,
+                "enable_ocr": True,
+            })
+
+        self.assertEqual(response["status"], "succeeded")
+        self.assertEqual(response["filename"], "测试.md")
+        self.assertEqual(save_status.call_args_list[0].args, ("12345678-abcd", "processing"))
+        self.assertEqual(save_status.call_args_list[1].args, ("12345678-abcd", "succeeded"))
+        process.assert_called_once_with(
+            "https://xhslink.cn/o/example",
+            "https://xhslink.cn/o/example",
+            "未命名内容",
+            "",
+            save_images=True,
+            enable_ocr=True,
+        )
+
+    def test_tracked_task_records_failure(self):
+        with (
+            patch.object(main, "save_task_status", side_effect=lambda task_id, status, **details: {
+                "task_id": task_id, "status": status, **details,
+            }) as save_status,
+            patch.object(main, "process_in_background", return_value=None),
+        ):
+            response = main.process_podcast_endpoint({
+                "url": "https://xhslink.cn/o/example",
+                "task_id": "12345678-abcd",
+            })
+
+        self.assertEqual(response["status"], "failed")
+        self.assertEqual(save_status.call_args_list[-1].args, ("12345678-abcd", "failed"))
+
+    def test_invalid_task_id_is_rejected(self):
+        for task_id in ("../bad", 12345678):
+            with (
+                self.subTest(task_id=task_id),
+                patch.object(main, "process_tracked_task") as process,
+            ):
+                response = main.process_podcast_endpoint({
+                    "url": "https://xhslink.cn/o/example",
+                    "task_id": task_id,
+                })
+
+                self.assertEqual(response["status"], "error")
+                process.assert_not_called()
+
+    def test_missing_task_status_is_queued(self):
+        bucket = types.SimpleNamespace(object_exists=lambda _key: False)
+        with patch.object(main, "get_oss_bucket", return_value=bucket):
+            response = main.task_status_endpoint("12345678-abcd")
+
+        self.assertEqual(response, {
+            "task_id": "12345678-abcd",
+            "status": "queued",
+        })
+
+    def test_reads_completed_task_status(self):
+        payload = b'{"task_id":"12345678-abcd","status":"succeeded","filename":"test.md"}'
+        result = types.SimpleNamespace(read=lambda: payload)
+        bucket = types.SimpleNamespace(
+            object_exists=lambda _key: True,
+            get_object=lambda _key: result,
+        )
+        with patch.object(main, "get_oss_bucket", return_value=bucket):
+            response = main.task_status_endpoint("12345678-abcd")
+
+        self.assertEqual(response["status"], "succeeded")
+        self.assertEqual(response["filename"], "test.md")
 
     def test_ocr_only_note_saves_text_without_image_gallery(self):
         note = {"title": "测试", "description": "", "publish_date": "2026-10-01",

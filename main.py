@@ -61,6 +61,7 @@ DESKTOP_USER_AGENT = (
 )
 _URL_PATTERN = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
 _URL_TRAILING_PUNCTUATION = '.,;:!?，。；：！？、)]}）》】」』'
+_TASK_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
 
 
 def extract_first_url(value: str) -> str:
@@ -142,6 +143,34 @@ def delete_oss_file(oss_key: str):
         print(f"🗑️ OSS 临时文件已清理: {oss_key}")
     except Exception as e:
         print(f"⚠️ OSS 临时文件清理失败: {oss_key}, {e}")
+
+
+def save_task_status(task_id: str, status: str, **details):
+    payload = {
+        "task_id": task_id,
+        "status": status,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        **details,
+    }
+    get_oss_bucket().put_object(
+        f"temp_audio/task_status/{task_id}.json",
+        json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    return payload
+
+
+def get_task_status(task_id: str) -> dict:
+    if not _TASK_ID_PATTERN.fullmatch(task_id):
+        return {"status": "error", "message": "task_id 格式无效"}
+    key = f"temp_audio/task_status/{task_id}.json"
+    bucket = get_oss_bucket()
+    if not bucket.object_exists(key):
+        return {"task_id": task_id, "status": "queued"}
+    try:
+        return json.loads(bucket.get_object(key).read().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {"task_id": task_id, "status": "failed", "message": "任务状态损坏"}
 
 def download_audio(url: str, output_dir: str = "/tmp/downloads"):
     if not os.path.exists(output_dir):
@@ -847,7 +876,28 @@ def process_in_background(download_url: str, original_url: str, title: str, text
         import traceback
         traceback.print_exc()
 
+
+def process_tracked_task(task_id: str, download_url: str, original_url: str, title: str, text: str, *, save_images: bool = False, enable_ocr: bool = False):
+    save_task_status(task_id, "processing", message="任务处理中")
+    filename = process_in_background(
+        download_url, original_url, title, text,
+        save_images=save_images, enable_ocr=enable_ocr,
+    )
+    if filename:
+        return save_task_status(
+            task_id, "succeeded", filename=filename,
+            message=f"✅ 已保存：{filename}",
+        )
+    return save_task_status(
+        task_id, "failed", message="处理失败，请查看 FC 日志",
+    )
+
 # ================= 6. API 接口（立即返回） =================
+@app.get("/api/tasks/{task_id}")
+def task_status_endpoint(task_id: str):
+    return get_task_status(task_id)
+
+
 @app.post("/api/process")
 def process_podcast_endpoint(req: dict):
     submitted_url = req.get("url", "")
@@ -856,9 +906,15 @@ def process_podcast_endpoint(req: dict):
     title = req.get("title", "未命名内容")
     text = req.get("text", "")
     raw = req.get("raw", False)
+    task_id = req.get("task_id", "")
 
     if not download_url and not text:
         return {"status": "error", "message": "未识别到有效 URL 或文本"}
+
+    if task_id and (
+        not isinstance(task_id, str) or not _TASK_ID_PATTERN.fullmatch(task_id)
+    ):
+        return {"status": "error", "message": "task_id 格式无效"}
 
     # raw 模式：跳过 DeepSeek，直接把文本包一层 frontmatter 存 OSS
     if raw and text:
@@ -872,13 +928,22 @@ def process_podcast_endpoint(req: dict):
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    # An FC instance can be reclaimed or replaced as soon as an HTTP request
-    # returns. Complete RedNote processing before acknowledging the request.
+    save_images = req.get("save_images", False)
+    enable_ocr = req.get("enable_ocr", False)
     if _is_rednote_url(download_url) and not text:
-        save_images = req.get("save_images", False)
-        enable_ocr = req.get("enable_ocr", False)
         if type(save_images) is not bool or type(enable_ocr) is not bool:
             return {"status": "error", "message": "save_images 和 enable_ocr 必须是 JSON 布尔值 true/false"}
+
+    # The shortcut submits tracked tasks with X-Fc-Invocation-Type: Async.
+    # FC queues the request; this invocation then runs to completion.
+    if task_id:
+        return process_tracked_task(
+            task_id, download_url, original_url, title, text,
+            save_images=save_images, enable_ocr=enable_ocr,
+        )
+
+    # Keep the legacy synchronous RedNote behavior for older shortcuts.
+    if _is_rednote_url(download_url) and not text:
         filename = process_in_background(
             download_url, original_url, title, text,
             save_images=save_images, enable_ocr=enable_ocr,
