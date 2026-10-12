@@ -1,8 +1,8 @@
 ---
-updated: 2026-10-12T13:58+08:00
+updated: 2026-10-12T14:07+08:00
 status: active
-milestone: 异步任务轮询已完成本地实现，等待线上验证
-last_verified: 2026-10-12T13:58+08:00
+milestone: 异步任务轮询已部署并完成线上端到端验证
+last_verified: 2026-10-12T14:07+08:00
 ---
 
 # audio-wiki-api — Handoff
@@ -10,8 +10,8 @@ last_verified: 2026-10-12T13:58+08:00
 ## 当前状态
 
 - 当前目标：解决小红书多图 OCR 导致 iOS 快捷指令等待超时的问题，同时保留最终完成反馈。
-- 已完成：任务状态写入 OSS、状态查询接口、快捷指令轮询文档和兼容测试。
-- 进行中：推送部署并验证真实异步请求从 `queued/processing` 到最终状态。
+- 已完成：任务状态写入 OSS、状态查询接口、快捷指令轮询文档、部署和线上验证。
+- 进行中：等待在 iPhone 上按文档更新快捷指令并确认设备交互。
 - 阻塞：无。
 
 ## 已完成并验证
@@ -23,11 +23,12 @@ last_verified: 2026-10-12T13:58+08:00
 | 快捷指令协议 | UUID + FC 异步请求头 + 5 秒轮询 | `docs/rednote-shortcut.md` |
 | 回归测试 | 新增任务跟踪及原有小红书分支 7 项定向测试通过 | README 中的测试命令边界说明 |
 | 语法检查 | `main.py`、`test_main.py` 编译通过 | `PYTHONPYCACHEPREFIX=/tmp/... python3 -m py_compile ...` |
+| 生产部署 | GitHub Actions 成功，FC 镜像为 `affb8da` | Actions run `38210036434`；FC `lastUpdateStatus=Successful` |
+| 异步提交 | POST 在 1.84 秒返回 `202` | 测试任务 `codex-poll-affb8da-02` |
+| 状态轮询 | `processing` 最终变为 `succeeded` 并返回文件名 | 线上 `GET /api/tasks/{task_id}` |
 
 ## 尚未验证
 
-- GitHub Actions 构建及 FC 新镜像部署。
-- 真实异步提交是否快速返回 `202`，以及轮询是否最终返回文件名。
 - iPhone 快捷指令的实际菜单、循环和停止分支，需要在设备上配置后确认。
 
 ## 阻塞与需要决策
@@ -36,10 +37,8 @@ last_verified: 2026-10-12T13:58+08:00
 
 ## 下一步行动
 
-1. 提交并推送代码；确认 GitHub Actions 成功。
-2. 等待 FC `lastUpdateStatus=Successful`。
-3. 用唯一 `task_id` 提交真实异步请求并轮询到终态。
-4. 按 `docs/rednote-shortcut.md` 更新 iOS 快捷指令并做设备验收。
+1. 按 `docs/rednote-shortcut.md` 更新 iOS 快捷指令并做设备验收。
+2. 确认成功与失败分支都会停止循环，超时分支不会重复提交原链接。
 
 ## 关键文件
 

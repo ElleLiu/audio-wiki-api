@@ -49,7 +49,8 @@ env PYTHONPYCACHEPREFIX=/tmp/audio-wiki-pycache python3 -m py_compile main.py te
 ```
 
 本机系统 Python 3.9 未安装 Pillow，且不支持项目既有测试使用的
-`int.bit_count()`；完整测试以 Docker/GitHub Actions 的 Python 3.10 环境为准。
+`int.bit_count()`；完整测试需在安装 `requirements.txt` 的 Python 3.10+
+环境运行。
 
 ## 部署与排障
 
