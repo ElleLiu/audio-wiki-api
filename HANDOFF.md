@@ -1,8 +1,8 @@
 ---
-updated: 2026-10-12T15:57+08:00
+updated: 2026-10-12T17:59+08:00
 status: active
-milestone: 快捷指令已简化为按 message 判断完成，并完成线上端到端验证
-last_verified: 2026-10-12T15:56+08:00
+milestone: 异步请求校验失败可通过任务状态返回，并完成线上验证
+last_verified: 2026-10-12T17:58+08:00
 ---
 
 # audio-wiki-api — Handoff
@@ -10,7 +10,7 @@ last_verified: 2026-10-12T15:56+08:00
 ## 当前状态
 
 - 当前目标：解决小红书多图 OCR 导致 iOS 快捷指令等待超时的问题，同时保留最终完成反馈。
-- 已完成：任务状态写入 OSS、状态查询接口、按 `message` 判断完成的快捷指令轮询文档、部署和线上验证。
+- 已完成：任务状态写入 OSS、状态查询接口、按 `message` 判断完成，以及异步参数校验失败的状态回传、部署和线上验证。
 - 进行中：等待在 iPhone 上按文档更新快捷指令并确认设备交互。
 - 阻塞：无。
 
@@ -18,16 +18,17 @@ last_verified: 2026-10-12T15:56+08:00
 
 | 事项 | 结果 | 证据 |
 |---|---|---|
-| 最新线上代码基线 | 本地已快进到 `origin/main` 的 `875c4bd` 后开发 | `git log -1 origin/main` |
+| 最新线上代码基线 | 参数校验失败状态回传已部署 | 提交 `dd855d2` |
 | 任务状态模型 | 支持 `queued/processing/succeeded/failed` | `main.py` 的 `save_task_status`、`get_task_status` |
 | 快捷指令协议 | UUID + FC 异步请求头 + 5 秒轮询 | `docs/rednote-shortcut.md` |
 | 回归测试 | 新增任务跟踪及原有小红书分支 7 项定向测试通过 | README 中的测试命令边界说明 |
 | 语法检查 | `main.py`、`test_main.py` 编译通过 | `PYTHONPYCACHEPREFIX=/tmp/... python3 -m py_compile ...` |
-| 生产部署 | GitHub Actions 成功，FC 镜像为 `6840c8a` | Actions run `38220057649`；FC `lastUpdateStatus=Successful` |
+| 生产部署 | GitHub Actions 成功，FC 镜像为 `dd855d2` | Actions run `38232794287`；FC `lastUpdateStatus=Successful` |
 | 异步提交 | POST 在 1.84 秒返回 `202` | 测试任务 `codex-poll-affb8da-02` |
 | 状态轮询 | `processing` 最终变为 `succeeded` 并返回文件名 | 线上 `GET /api/tasks/{task_id}` |
 | 简化完成判断 | `queued/processing` 不含 `message`；成功或失败才返回 `message` | 提交 `6840c8a`；Actions run `38220057649` |
 | 简化轮询线上验证 | POST 1.93 秒返回 `202`；`processing` 无 `message`；最终 `succeeded` 且含保存通知 | 测试任务 `codex-message-6840c8a-01`；临时状态对象已清理 |
+| 参数校验失败回传 | 合法 `task_id` 的校验错误写为 `failed`，不再永久停留在 `queued` | 线上错误类型测试返回具体布尔值提示；临时状态对象已清理 |
 
 ## 尚未验证
 
@@ -39,7 +40,7 @@ last_verified: 2026-10-12T15:56+08:00
 
 ## 下一步行动
 
-1. 按 `docs/rednote-shortcut.md` 更新 iOS 快捷指令并做设备验收。
+1. 将快捷指令字典中的 `save_images`、`enable_ocr` 类型确认设为“布尔值”，重新提交真实链接。
 2. 确认成功或失败的 `message` 均会触发通知并停止循环，处理中会继续轮询。
 
 ## 关键文件
