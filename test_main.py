@@ -249,6 +249,7 @@ class UrlExtractionTests(unittest.TestCase):
         self.assertEqual(response["status"], "succeeded")
         self.assertEqual(response["filename"], "测试.md")
         self.assertEqual(save_status.call_args_list[0].args, ("12345678-abcd", "processing"))
+        self.assertEqual(save_status.call_args_list[0].kwargs, {})
         self.assertEqual(save_status.call_args_list[1].args, ("12345678-abcd", "succeeded"))
         process.assert_called_once_with(
             "https://xhslink.cn/o/example",

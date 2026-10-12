@@ -22,7 +22,7 @@ OCR 关闭时不调用 OCR；保存图片关闭时不上传图片。OCR 单独�
 7. 加入“生成 UUID”，保存为变量 `任务ID`，并在 POST 的 JSON 中添加 `task_id`，值为 `任务ID`。
 8. 在 POST 请求头中添加 `X-Fc-Invocation-Type`，值为 `Async`。FC 会返回空的 `202 Accepted`，不要再从这个响应读取 `status` 或 `message`。
 9. POST 后使用“重复”循环，每次先等待 5 秒，再 GET：`https://audio-wiki-api-pedfgmuuew.cn-hongkong.fcapp.run/api/tasks/任务ID`。
-10. 读取查询响应的 `status`：`queued` 或 `processing` 时继续；`succeeded` 时显示 `message` 并停止快捷指令；`failed` 时显示错误并停止快捷指令。
+10. 从查询响应中获取 `message`。如果 `message`“有任何值”，就显示通知并“停止快捷指令”；如果没有值，直接进入下一轮。处理中和排队中的任务都不返回 `message`，成功或失败时才返回最终提示。
 11. 建议最多重复 120 次（约 10 分钟）。循环结束仍未完成时显示“任务仍在后台处理，请稍后同步 Obsidian”，不要自动重提原链接。
 
 如某版本的“获取 URL 内容”无法把变量填入布尔字段，可在每个菜单分支直接调用 POST，两个布尔值在该分支中固定按表设置。

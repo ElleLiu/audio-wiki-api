@@ -878,7 +878,7 @@ def process_in_background(download_url: str, original_url: str, title: str, text
 
 
 def process_tracked_task(task_id: str, download_url: str, original_url: str, title: str, text: str, *, save_images: bool = False, enable_ocr: bool = False):
-    save_task_status(task_id, "processing", message="任务处理中")
+    save_task_status(task_id, "processing")
     filename = process_in_background(
         download_url, original_url, title, text,
         save_images=save_images, enable_ocr=enable_ocr,
