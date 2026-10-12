@@ -898,6 +898,13 @@ def task_status_endpoint(task_id: str):
     return get_task_status(task_id)
 
 
+def reject_request(task_id, message: str):
+    print(f"❌ 请求校验失败: {message}")
+    if isinstance(task_id, str) and _TASK_ID_PATTERN.fullmatch(task_id):
+        return save_task_status(task_id, "failed", message=message)
+    return {"status": "error", "message": message}
+
+
 @app.post("/api/process")
 def process_podcast_endpoint(req: dict):
     submitted_url = req.get("url", "")
@@ -909,12 +916,12 @@ def process_podcast_endpoint(req: dict):
     task_id = req.get("task_id", "")
 
     if not download_url and not text:
-        return {"status": "error", "message": "未识别到有效 URL 或文本"}
+        return reject_request(task_id, "未识别到有效 URL 或文本")
 
     if task_id and (
         not isinstance(task_id, str) or not _TASK_ID_PATTERN.fullmatch(task_id)
     ):
-        return {"status": "error", "message": "task_id 格式无效"}
+        return reject_request(task_id, "task_id 格式无效")
 
     # raw 模式：跳过 DeepSeek，直接把文本包一层 frontmatter 存 OSS
     if raw and text:
@@ -932,7 +939,10 @@ def process_podcast_endpoint(req: dict):
     enable_ocr = req.get("enable_ocr", False)
     if _is_rednote_url(download_url) and not text:
         if type(save_images) is not bool or type(enable_ocr) is not bool:
-            return {"status": "error", "message": "save_images 和 enable_ocr 必须是 JSON 布尔值 true/false"}
+            return reject_request(
+                task_id,
+                "save_images 和 enable_ocr 必须是 JSON 布尔值 true/false",
+            )
 
     # The shortcut submits tracked tasks with X-Fc-Invocation-Type: Async.
     # FC queues the request; this invocation then runs to completion.

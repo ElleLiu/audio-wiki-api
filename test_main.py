@@ -232,6 +232,28 @@ class UrlExtractionTests(unittest.TestCase):
         self.assertEqual(response["status"], "error")
         process.assert_not_called()
 
+    def test_tracked_validation_error_is_recorded_for_polling(self):
+        with (
+            patch.object(main, "save_task_status", side_effect=lambda task_id, status, **details: {
+                "task_id": task_id, "status": status, **details,
+            }) as save_status,
+            patch.object(main, "process_tracked_task") as process,
+        ):
+            response = main.process_podcast_endpoint({
+                "url": "https://xhslink.cn/o/example",
+                "task_id": "12345678-abcd",
+                "save_images": "false",
+            })
+
+        self.assertEqual(response["status"], "failed")
+        self.assertIn("JSON 布尔值", response["message"])
+        save_status.assert_called_once_with(
+            "12345678-abcd",
+            "failed",
+            message="save_images 和 enable_ocr 必须是 JSON 布尔值 true/false",
+        )
+        process.assert_not_called()
+
     def test_tracked_task_records_success(self):
         with (
             patch.object(main, "save_task_status", side_effect=lambda task_id, status, **details: {
