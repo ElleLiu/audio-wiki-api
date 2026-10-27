@@ -12,7 +12,7 @@ import yt_dlp
 import oss2
 from datetime import datetime
 from typing import Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 from fastapi import FastAPI
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -75,8 +75,14 @@ def extract_first_url(value: str) -> str:
 def _is_rednote_url(url: str) -> bool:
     hostname = (urlparse(url).hostname or "").lower()
     return (
-        hostname in {"xiaohongshu.com", "xhslink.cn", "xhslink.com"}
+        hostname in {
+            "xiaohongshu.com",
+            "rednote.com",
+            "xhslink.cn",
+            "xhslink.com",
+        }
         or hostname.endswith(".xiaohongshu.com")
+        or hostname.endswith(".rednote.com")
     )
 
 
@@ -407,6 +413,41 @@ def _rednote_headers(referer: str) -> dict:
     return headers
 
 
+def _get_rednote_page(url: str, *, max_redirects: int = 6):
+    """Follow only trusted RedNote redirects while preserving the configured cookie.
+
+    requests removes a manually supplied Cookie header when a redirect changes
+    host.  Xiaohongshu now redirects some overseas traffic from
+    xiaohongshu.com to rednote.com, so follow those redirects ourselves and
+    rebuild the trusted request headers on every hop.
+    """
+    current_url = url
+    for _ in range(max_redirects + 1):
+        response = requests.get(
+            current_url,
+            headers=_rednote_headers(current_url),
+            timeout=30,
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            return response
+
+        location = response.headers.get("Location")
+        if not location:
+            raise ValueError("小红书跳转响应缺少 Location")
+        next_url = urljoin(current_url, location)
+        if not _is_rednote_url(next_url):
+            raise ValueError(f"小红书跳转到了不受信任的域名: {urlparse(next_url).hostname}")
+        print(
+            "↪️ 小红书可信跳转: "
+            f"{urlparse(current_url).hostname} -> {urlparse(next_url).hostname}"
+        )
+        current_url = next_url
+
+    raise ValueError("小红书跳转次数过多")
+
+
 def _compress_and_upload_rednote_image(image_url: str, referer: str) -> tuple[str, bytes]:
     from PIL import Image, ImageOps
 
@@ -479,19 +520,13 @@ def _ocr_rednote_image(image_bytes: bytes) -> str:
 
 def fetch_rednote_post(url: str, *, save_images: bool = False, enable_ocr: bool = False) -> dict:
     try:
-        response = requests.get(url, headers=_rednote_headers(url), timeout=30)
-        response.raise_for_status()
+        response = _get_rednote_page(url)
         if urlparse(response.url).path.startswith('/login'):
             print("⚠️ 小红书网页请求跳转登录，改用 yt-dlp 已验证的 Cookie 抓取图文")
             return _fetch_rednote_post_with_ytdlp(url, save_images=save_images, enable_ocr=enable_ocr)
         canonical_url = _canonical_rednote_url(response.url)
         if canonical_url != response.url:
-            response = requests.get(
-                canonical_url,
-                headers=_rednote_headers(canonical_url),
-                timeout=30,
-            )
-            response.raise_for_status()
+            response = _get_rednote_page(canonical_url)
         note = _extract_rednote_note(response.text, response.url)
         if not note:
             print("⚠️ 小红书网页未提取到图文数据，尝试 yt-dlp 元数据")

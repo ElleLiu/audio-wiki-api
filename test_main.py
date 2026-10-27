@@ -119,6 +119,54 @@ class UrlExtractionTests(unittest.TestCase):
             "REDNOTE_COOKIES", "/tmp/rednote_cookies.txt"
         )
 
+    def test_recognizes_rednote_overseas_domain(self):
+        self.assertTrue(main._is_rednote_url(
+            "https://www.rednote.com/discovery/item/abc123"
+        ))
+
+    def test_preserves_cookie_across_trusted_rednote_redirect(self):
+        redirect = types.SimpleNamespace(
+            status_code=302,
+            headers={"Location": "https://www.rednote.com/discovery/item/abc123"},
+            url="https://www.xiaohongshu.com/discovery/item/abc123",
+            raise_for_status=lambda: None,
+        )
+        final = types.SimpleNamespace(
+            status_code=200,
+            headers={},
+            url="https://www.rednote.com/discovery/item/abc123",
+            text="note",
+            raise_for_status=lambda: None,
+        )
+        with (
+            patch.object(main, "REDNOTE_COOKIES", "web_session=test-session"),
+            patch.object(main.requests, "get", side_effect=[redirect, final]) as get,
+        ):
+            response = main._get_rednote_page(
+                "https://www.xiaohongshu.com/discovery/item/abc123"
+            )
+
+        self.assertIs(response, final)
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(
+            get.call_args_list[1].kwargs["headers"]["Cookie"],
+            "web_session=test-session",
+        )
+        self.assertFalse(get.call_args_list[1].kwargs["allow_redirects"])
+
+    def test_rejects_untrusted_rednote_redirect(self):
+        redirect = types.SimpleNamespace(
+            status_code=302,
+            headers={"Location": "https://example.com/login"},
+            url="https://www.xiaohongshu.com/discovery/item/abc123",
+            raise_for_status=lambda: None,
+        )
+        with patch.object(main.requests, "get", return_value=redirect):
+            with self.assertRaisesRegex(ValueError, "不受信任"):
+                main._get_rednote_page(
+                    "https://www.xiaohongshu.com/discovery/item/abc123"
+                )
+
     def test_builds_canonical_rednote_url_from_shortlink_redirect(self):
         redirected = (
             "https://www.xiaohongshu.com/explore?target_note_id=abc123"
