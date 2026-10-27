@@ -345,6 +345,36 @@ class UrlExtractionTests(unittest.TestCase):
         self.assertEqual(response["status"], "failed")
         self.assertEqual(save_status.call_args_list[-1].args, ("12345678-abcd", "failed"))
 
+    def test_tracked_rednote_failure_records_safe_detail(self):
+        with (
+            patch.object(main, "process_in_background", return_value=None),
+            patch.object(main, "save_task_status", side_effect=lambda task_id, status, **details: {
+                "task_id": task_id, "status": status, **details,
+            }),
+        ):
+            main._rednote_failure_detail.set("网页最终进入登录页；yt-dlp 未返回笔记元数据")
+            response = main.process_tracked_task(
+                "12345678-abcd",
+                "https://xhslink.cn/o/example",
+                "https://xhslink.cn/o/example",
+                "未命名内容",
+                "",
+            )
+
+        self.assertIn("网页最终进入登录页", response["message"])
+
+    def test_rednote_failure_detail_hides_cookie(self):
+        with patch.object(main, "REDNOTE_COOKIES", "secret-cookie-value"):
+            main._rednote_failure_detail.set("")
+            main._record_rednote_failure(
+                "yt-dlp error secret-cookie-value\nnext line"
+            )
+
+        detail = main._rednote_failure_detail.get()
+        self.assertNotIn("secret-cookie-value", detail)
+        self.assertIn("[已隐藏 Cookie]", detail)
+        self.assertNotIn("\n", detail)
+
     def test_invalid_task_id_is_rejected(self):
         for task_id in ("../bad", 12345678):
             with (
