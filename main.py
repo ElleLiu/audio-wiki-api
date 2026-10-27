@@ -10,6 +10,7 @@ import tempfile
 import requests
 import yt_dlp
 import oss2
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Optional
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -62,6 +63,20 @@ DESKTOP_USER_AGENT = (
 _URL_PATTERN = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
 _URL_TRAILING_PUNCTUATION = '.,;:!?，。；：！？、)]}）》】」』'
 _TASK_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
+_rednote_failure_detail = ContextVar("rednote_failure_detail", default="")
+
+
+def _record_rednote_failure(detail: str):
+    """Keep a short, cookie-free failure summary for the current invocation."""
+    safe_detail = re.sub(r"[\r\n\t]+", " ", str(detail)).strip()
+    if REDNOTE_COOKIES:
+        safe_detail = safe_detail.replace(REDNOTE_COOKIES, "[已隐藏 Cookie]")
+    safe_detail = safe_detail[:500]
+    previous = _rednote_failure_detail.get()
+    if safe_detail and safe_detail not in previous:
+        _rednote_failure_detail.set(
+            f"{previous}；{safe_detail}" if previous else safe_detail
+        )
 
 
 def extract_first_url(value: str) -> str:
@@ -519,9 +534,13 @@ def _ocr_rednote_image(image_bytes: bytes) -> str:
 
 
 def fetch_rednote_post(url: str, *, save_images: bool = False, enable_ocr: bool = False) -> dict:
+    _rednote_failure_detail.set("")
     try:
         response = _get_rednote_page(url)
         if urlparse(response.url).path.startswith('/login'):
+            _record_rednote_failure(
+                f"网页最终进入登录页（{urlparse(response.url).hostname}）"
+            )
             print("⚠️ 小红书网页请求跳转登录，改用 yt-dlp 已验证的 Cookie 抓取图文")
             return _fetch_rednote_post_with_ytdlp(url, save_images=save_images, enable_ocr=enable_ocr)
         canonical_url = _canonical_rednote_url(response.url)
@@ -529,11 +548,13 @@ def fetch_rednote_post(url: str, *, save_images: bool = False, enable_ocr: bool 
             response = _get_rednote_page(canonical_url)
         note = _extract_rednote_note(response.text, response.url)
         if not note:
+            _record_rednote_failure("网页中未提取到笔记数据")
             print("⚠️ 小红书网页未提取到图文数据，尝试 yt-dlp 元数据")
             return _fetch_rednote_post_with_ytdlp(url, save_images=save_images, enable_ocr=enable_ocr)
 
         return _save_rednote_images(note, response.url, save_images=save_images, enable_ocr=enable_ocr)
     except Exception as exc:
+        _record_rednote_failure(f"网页抓取 {type(exc).__name__}: {exc}")
         print(f"⚠️ 小红书网页抓取失败: {type(exc).__name__}: {exc}，尝试 yt-dlp 元数据")
         return _fetch_rednote_post_with_ytdlp(url, save_images=save_images, enable_ocr=enable_ocr)
 
@@ -553,6 +574,7 @@ def _fetch_rednote_post_with_ytdlp(url: str, *, save_images: bool = False, enabl
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
         if not info or not info.get("id"):
+            _record_rednote_failure("yt-dlp 未返回笔记元数据")
             print("⚠️ yt-dlp 未返回小红书笔记元数据")
             return {}
         thumbnails = info.get("thumbnails") or []
@@ -577,6 +599,7 @@ def _fetch_rednote_post_with_ytdlp(url: str, *, save_images: bool = False, enabl
         }
         return _save_rednote_images(note, url, save_images=save_images, enable_ocr=enable_ocr)
     except Exception as exc:
+        _record_rednote_failure(f"yt-dlp {type(exc).__name__}: {exc}")
         print(f"❌ 小红书 yt-dlp 图文抓取失败: {type(exc).__name__}: {exc}")
         return {}
 
@@ -628,6 +651,7 @@ def _save_rednote_images(note: dict, referer: str, *, save_images: bool = False,
 
     has_ocr_text = any(text and not text.startswith("（OCR") for text in image_ocr)
     if not image_paths and not note["description"] and not has_ocr_text:
+        _record_rednote_failure("笔记没有可用正文、图片或 OCR 文字")
         print("⚠️ 小红书笔记既没有可用图片，也没有正文")
         return {}
     note["image_paths"] = image_paths
@@ -923,9 +947,9 @@ def process_tracked_task(task_id: str, download_url: str, original_url: str, tit
             task_id, "succeeded", filename=filename,
             message=f"✅ 已保存：{filename}",
         )
-    return save_task_status(
-        task_id, "failed", message="处理失败，请查看 FC 日志",
-    )
+    detail = _rednote_failure_detail.get() if _is_rednote_url(download_url) else ""
+    message = f"处理失败：{detail}" if detail else "处理失败，请查看 FC 日志"
+    return save_task_status(task_id, "failed", message=message)
 
 # ================= 6. API 接口（立即返回） =================
 @app.get("/api/tasks/{task_id}")
@@ -995,7 +1019,9 @@ def process_podcast_endpoint(req: dict):
         )
         if filename:
             return {"status": "ok", "message": f"✅ 已保存：{filename}", "filename": filename}
-        return {"status": "error", "message": "小红书内容处理失败，请查看 FC 日志"}
+        detail = _rednote_failure_detail.get()
+        message = f"小红书内容处理失败：{detail}" if detail else "小红书内容处理失败，请查看 FC 日志"
+        return {"status": "error", "message": message}
 
     print(f"🚀 收到请求: {download_url}，后台处理中...")
     thread = threading.Thread(
