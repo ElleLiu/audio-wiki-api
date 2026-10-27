@@ -68,7 +68,8 @@ _rednote_failure_detail = ContextVar("rednote_failure_detail", default="")
 
 def _record_rednote_failure(detail: str):
     """Keep a short, cookie-free failure summary for the current invocation."""
-    safe_detail = re.sub(r"[\r\n\t]+", " ", str(detail)).strip()
+    safe_detail = re.sub(r"\x1b\[[0-9;]*m", "", str(detail))
+    safe_detail = re.sub(r"[\r\n\t]+", " ", safe_detail).strip()
     if REDNOTE_COOKIES:
         safe_detail = safe_detail.replace(REDNOTE_COOKIES, "[已隐藏 Cookie]")
     safe_detail = safe_detail[:500]
@@ -437,7 +438,14 @@ def _get_rednote_page(url: str, *, max_redirects: int = 6):
     rebuild the trusted request headers on every hop.
     """
     current_url = url
+    canonical_xhs_url = ""
     for _ in range(max_redirects + 1):
+        parsed_current = urlparse(current_url)
+        if (
+            (parsed_current.hostname or "").lower().endswith("xiaohongshu.com")
+            and re.search(r"/(?:explore|discovery/item)/[\da-f]+", parsed_current.path)
+        ):
+            canonical_xhs_url = current_url
         response = requests.get(
             current_url,
             headers=_rednote_headers(current_url),
@@ -446,6 +454,7 @@ def _get_rednote_page(url: str, *, max_redirects: int = 6):
         )
         response.raise_for_status()
         if response.status_code not in {301, 302, 303, 307, 308}:
+            response.rednote_canonical_xhs_url = canonical_xhs_url
             return response
 
         location = response.headers.get("Location")
@@ -537,12 +546,13 @@ def fetch_rednote_post(url: str, *, save_images: bool = False, enable_ocr: bool 
     _rednote_failure_detail.set("")
     try:
         response = _get_rednote_page(url)
+        fallback_url = getattr(response, "rednote_canonical_xhs_url", "") or url
         if urlparse(response.url).path.startswith('/login'):
             _record_rednote_failure(
                 f"网页最终进入登录页（{urlparse(response.url).hostname}）"
             )
             print("⚠️ 小红书网页请求跳转登录，改用 yt-dlp 已验证的 Cookie 抓取图文")
-            return _fetch_rednote_post_with_ytdlp(url, save_images=save_images, enable_ocr=enable_ocr)
+            return _fetch_rednote_post_with_ytdlp(fallback_url, save_images=save_images, enable_ocr=enable_ocr)
         canonical_url = _canonical_rednote_url(response.url)
         if canonical_url != response.url:
             response = _get_rednote_page(canonical_url)
@@ -550,7 +560,7 @@ def fetch_rednote_post(url: str, *, save_images: bool = False, enable_ocr: bool 
         if not note:
             _record_rednote_failure("网页中未提取到笔记数据")
             print("⚠️ 小红书网页未提取到图文数据，尝试 yt-dlp 元数据")
-            return _fetch_rednote_post_with_ytdlp(url, save_images=save_images, enable_ocr=enable_ocr)
+            return _fetch_rednote_post_with_ytdlp(fallback_url, save_images=save_images, enable_ocr=enable_ocr)
 
         return _save_rednote_images(note, response.url, save_images=save_images, enable_ocr=enable_ocr)
     except Exception as exc:

@@ -154,6 +154,61 @@ class UrlExtractionTests(unittest.TestCase):
         )
         self.assertFalse(get.call_args_list[1].kwargs["allow_redirects"])
 
+    def test_keeps_canonical_xiaohongshu_url_before_rednote_login(self):
+        canonical_url = (
+            "https://www.xiaohongshu.com/discovery/item/abc123"
+            "?xsec_token=token-value"
+        )
+        responses = [
+            types.SimpleNamespace(
+                status_code=302,
+                headers={"Location": canonical_url},
+                url="https://xhslink.cn/o/example",
+                raise_for_status=lambda: None,
+            ),
+            types.SimpleNamespace(
+                status_code=302,
+                headers={"Location": "https://www.rednote.com/discovery/item/abc123"},
+                url=canonical_url,
+                raise_for_status=lambda: None,
+            ),
+            types.SimpleNamespace(
+                status_code=302,
+                headers={"Location": "https://www.rednote.com/login"},
+                url="https://www.rednote.com/discovery/item/abc123",
+                raise_for_status=lambda: None,
+            ),
+            types.SimpleNamespace(
+                status_code=200,
+                headers={},
+                url="https://www.rednote.com/login",
+                text="login",
+                raise_for_status=lambda: None,
+            ),
+        ]
+        with patch.object(main.requests, "get", side_effect=responses):
+            response = main._get_rednote_page("https://xhslink.cn/o/example")
+
+        self.assertEqual(response.rednote_canonical_xhs_url, canonical_url)
+
+    def test_login_fallback_uses_canonical_xiaohongshu_url(self):
+        canonical_url = "https://www.xiaohongshu.com/discovery/item/abc123"
+        login = types.SimpleNamespace(
+            url="https://www.rednote.com/login",
+            rednote_canonical_xhs_url=canonical_url,
+        )
+        with (
+            patch.object(main, "_get_rednote_page", return_value=login),
+            patch.object(main, "_fetch_rednote_post_with_ytdlp", return_value={}) as fallback,
+        ):
+            main.fetch_rednote_post("https://xhslink.cn/o/example")
+
+        fallback.assert_called_once_with(
+            canonical_url,
+            save_images=False,
+            enable_ocr=False,
+        )
+
     def test_rejects_untrusted_rednote_redirect(self):
         redirect = types.SimpleNamespace(
             status_code=302,
