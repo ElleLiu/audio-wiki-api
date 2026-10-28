@@ -191,6 +191,57 @@ class UrlExtractionTests(unittest.TestCase):
 
         self.assertEqual(response.rednote_canonical_xhs_url, canonical_url)
 
+    def test_resolves_rednote_video_to_canonical_xiaohongshu_url(self):
+        canonical_url = (
+            "https://www.xiaohongshu.com/discovery/item/abc123"
+            "?xsec_token=token-value"
+        )
+        response = types.SimpleNamespace(
+            rednote_canonical_xhs_url=canonical_url,
+        )
+        with patch.object(main, "_get_rednote_page", return_value=response):
+            resolved = main._resolve_rednote_media_url(
+                "https://xhslink.cn/o/example"
+            )
+
+        self.assertEqual(resolved, canonical_url)
+
+    def test_download_audio_uses_canonical_rednote_url(self):
+        canonical_url = "https://www.xiaohongshu.com/discovery/item/abc123"
+        extracted_urls = []
+
+        class FakeYDL:
+            def __init__(self, options):
+                self.options = options
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def extract_info(self, url, download):
+                extracted_urls.append(url)
+                return {
+                    "id": "abc123",
+                    "title": "视频标题",
+                    "upload_date": "20261028",
+                    "duration": 12,
+                }
+
+            def prepare_filename(self, info):
+                return "/tmp/downloads/video.webm"
+
+        with (
+            patch.object(main, "_resolve_rednote_media_url", return_value=canonical_url),
+            patch.object(main, "_download_site_options", return_value=({}, None)),
+            patch.object(main.yt_dlp, "YoutubeDL", FakeYDL),
+        ):
+            result = main.download_audio("https://xhslink.cn/o/example")
+
+        self.assertEqual(extracted_urls, [canonical_url])
+        self.assertEqual(result[0], "/tmp/downloads/video.mp3")
+
     def test_login_fallback_uses_canonical_xiaohongshu_url(self):
         canonical_url = "https://www.xiaohongshu.com/discovery/item/abc123"
         login = types.SimpleNamespace(
