@@ -597,7 +597,9 @@ def _fetch_rednote_post_with_ytdlp(url: str, *, save_images: bool = False, enabl
             if len(upload_date) == 8 else datetime.now().strftime("%Y-%m-%d")
         )
         description = info.get("description") or ""
-        title = info.get("title") or ""
+        title = re.sub(
+            r"[\u200b-\u200d\ufeff]", "", info.get("title") or ""
+        ).strip()
         if not title or re.fullmatch(r"XiaoHongShu video #[0-9a-f]+", title, re.IGNORECASE):
             title = next(
                 (line.strip() for line in description.splitlines() if line.strip()),
