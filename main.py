@@ -64,6 +64,8 @@ _URL_PATTERN = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
 _URL_TRAILING_PUNCTUATION = '.,;:!?，。；：！？、)]}）》】」』'
 _TASK_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
 _rednote_failure_detail = ContextVar("rednote_failure_detail", default="")
+_rednote_detected_type = ContextVar("rednote_detected_type", default="")
+_download_failure_detail = ContextVar("download_failure_detail", default="")
 
 
 def _record_rednote_failure(detail: str):
@@ -116,6 +118,20 @@ def _write_cookie_file(env_name: str, path: str) -> Optional[str]:
     content = os.environ.get(env_name, "").strip()
     if not content:
         return None
+    # yt-dlp cookiefile requires Netscape format. Browser developer tools often
+    # copy cookies as a single HTTP header, so convert that representation.
+    if "\t" not in content and env_name == "REDNOTE_COOKIES":
+        cookie_rows = []
+        for item in content.split(";"):
+            if "=" not in item:
+                continue
+            name, value = item.strip().split("=", 1)
+            if name:
+                cookie_rows.append(
+                    f".xiaohongshu.com\tTRUE\t/\tTRUE\t0\t{name}\t{value}"
+                )
+        if cookie_rows:
+            content = "# Netscape HTTP Cookie File\n" + "\n".join(cookie_rows)
     with open(path, "w", encoding="utf-8") as cookie_file:
         cookie_file.write(content)
         cookie_file.write("\n")
@@ -195,6 +211,7 @@ def get_task_status(task_id: str) -> dict:
         return {"task_id": task_id, "status": "failed", "message": "任务状态损坏"}
 
 def download_audio(url: str, output_dir: str = "/tmp/downloads"):
+    _download_failure_detail.set("")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -245,6 +262,9 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
             print(f"⏱️ 音频时长: {int(duration)//60} 分 {int(duration)%60} 秒")
             return mp3_path, info.get('title', 'Unknown'), publish_date, duration
     except Exception as e:
+        _download_failure_detail.set(
+            re.sub(r"\x1b\[[0-9;]*m", "", str(e)).strip()[:500]
+        )
         print(f"❌ 下载失败: {e}")
         return None, None, datetime.now().strftime("%Y-%m-%d"), 0
 
@@ -482,7 +502,10 @@ def _resolve_rednote_media_url(url: str) -> str:
     try:
         response = _get_rednote_page(url)
         canonical_url = getattr(response, "rednote_canonical_xhs_url", "")
-        return canonical_url or url
+        resolved_url = canonical_url or url
+        note_type = parse_qs(urlparse(resolved_url).query).get("type", [""])[0]
+        _rednote_detected_type.set(note_type.lower())
+        return resolved_url
     except Exception as exc:
         print(f"⚠️ 小红书原始视频地址解析失败，继续使用分享链接: {type(exc).__name__}: {exc}")
         return url
@@ -932,6 +955,7 @@ def generate_and_save_markdown(raw_text: str, title: str, source_url: str, publi
     return filename
 
 def process_in_background(download_url: str, original_url: str, title: str, text: str, *, save_images: bool = False, enable_ocr: bool = False):
+    _rednote_detected_type.set("")
     current_date = datetime.now().strftime("%Y-%m-%d")
     publish_date = current_date
     duration = 0
@@ -945,6 +969,16 @@ def process_in_background(download_url: str, original_url: str, title: str, text
             with tempfile.TemporaryDirectory(prefix="audio-wiki-download-") as download_dir:
                 mp3_path, detected_title, publish_date, duration = download_audio(download_url, download_dir)
                 if not mp3_path:
+                    if (
+                        _is_rednote_url(download_url)
+                        and _rednote_detected_type.get() == "video"
+                    ):
+                        detail = _download_failure_detail.get() or "未取得视频音频格式"
+                        _record_rednote_failure(
+                            f"已识别为小红书视频，但音频下载失败：{detail}。请更新 REDNOTE_COOKIES"
+                        )
+                        print("❌ 小红书视频音频下载失败，停止任务，不再按图文保存")
+                        return
                     rednote = fetch_rednote_post(download_url, save_images=save_images, enable_ocr=enable_ocr) if _is_rednote_url(download_url) else {}
                     if rednote:
                         return save_rednote_post(rednote, original_url)
