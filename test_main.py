@@ -669,6 +669,33 @@ class UrlExtractionTests(unittest.TestCase):
 
         self.assertEqual(note["title"], "被裁满一个月。投出数百份简历")
 
+    def test_rednote_empty_title_uses_description(self):
+        class FakeYDL:
+            def __init__(self, options):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def extract_info(self, url, download):
+                return {
+                    "id": "6a9fa35300000000250372ae",
+                    "title": "",
+                    "description": "被裁满一个月。投出数百份简历\n正文",
+                    "thumbnails": [],
+                }
+
+        with (
+            patch.object(main, "_download_site_options", return_value=({}, None)),
+            patch.object(main.yt_dlp, "YoutubeDL", FakeYDL),
+        ):
+            note = main._fetch_rednote_post_with_ytdlp("https://xhslink.cn/o/example")
+
+        self.assertEqual(note["title"], "被裁满一个月。投出数百份简历")
+
     def test_rednote_image_uses_https_and_site_referer(self):
         response = types.SimpleNamespace(
             content=b"image",
