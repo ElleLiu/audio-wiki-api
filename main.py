@@ -600,11 +600,20 @@ def _fetch_rednote_post_with_ytdlp(url: str, *, save_images: bool = False, enabl
         title = re.sub(
             r"[\u200b-\u200d\ufeff]", "", info.get("title") or ""
         ).strip()
-        if not title or re.fullmatch(r"XiaoHongShu video #[0-9a-f]+", title, re.IGNORECASE):
+        if (
+            not any(character.isalnum() for character in title)
+            or re.fullmatch(r"XiaoHongShu video #[0-9a-f]+", title, re.IGNORECASE)
+        ):
             title = next(
-                (line.strip() for line in description.splitlines() if line.strip()),
+                (
+                    line.strip()
+                    for line in description.splitlines()
+                    if any(character.isalnum() for character in line)
+                ),
                 "",
             )[:80]
+        if not title:
+            title = f"小红书笔记_{info['id']}"
         note = {
             "id": info["id"],
             "title": title,

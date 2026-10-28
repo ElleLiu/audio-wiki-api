@@ -683,7 +683,7 @@ class UrlExtractionTests(unittest.TestCase):
             def extract_info(self, url, download):
                 return {
                     "id": "6a9fa35300000000250372ae",
-                    "title": " \u200b\n ",
+                    "title": " \u200b📕\n ",
                     "description": "被裁满一个月。投出数百份简历\n正文",
                     "thumbnails": [],
                 }
@@ -695,6 +695,38 @@ class UrlExtractionTests(unittest.TestCase):
             note = main._fetch_rednote_post_with_ytdlp("https://xhslink.cn/o/example")
 
         self.assertEqual(note["title"], "被裁满一个月。投出数百份简历")
+
+    def test_rednote_without_text_uses_unique_note_id_title(self):
+        class FakeYDL:
+            def __init__(self, options):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def extract_info(self, url, download):
+                return {
+                    "id": "6a9fa35300000000250372ae",
+                    "title": "📕",
+                    "description": "✨",
+                    "thumbnails": [{"url": "https://img.example/1.jpg"}],
+                }
+
+        with (
+            patch.object(main, "_download_site_options", return_value=({}, None)),
+            patch.object(main.yt_dlp, "YoutubeDL", FakeYDL),
+            patch.object(main, "_compress_and_upload_rednote_image", return_value=("assets/rednote/1.webp", b"webp")),
+            patch.object(main, "_rednote_image_fingerprint", return_value=1),
+            patch.object(main, "get_oss_bucket"),
+        ):
+            note = main._fetch_rednote_post_with_ytdlp(
+                "https://xhslink.cn/o/example", save_images=True
+            )
+
+        self.assertEqual(note["title"], "小红书笔记_6a9fa35300000000250372ae")
 
     def test_rednote_image_uses_https_and_site_referer(self):
         response = types.SimpleNamespace(
