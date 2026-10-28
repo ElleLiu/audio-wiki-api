@@ -3,6 +3,7 @@ import io
 import sys
 import types
 import unittest
+import tempfile
 from unittest.mock import patch
 
 # URL routing tests do not need the web server or cloud clients. Keep them
@@ -118,6 +119,29 @@ class UrlExtractionTests(unittest.TestCase):
         write_cookie.assert_called_once_with(
             "REDNOTE_COOKIES", "/tmp/rednote_cookies.txt"
         )
+
+    def test_converts_rednote_cookie_header_to_netscape_file(self):
+        with tempfile.NamedTemporaryFile(delete=False) as cookie_file:
+            cookie_path = cookie_file.name
+        try:
+            with patch.dict(
+                os.environ,
+                {"REDNOTE_COOKIES": "web_session=abc123; a1=xyz"},
+            ):
+                result = main._write_cookie_file(
+                    "REDNOTE_COOKIES", cookie_path
+                )
+            with open(result, encoding="utf-8") as saved:
+                content = saved.read()
+        finally:
+            os.unlink(cookie_path)
+
+        self.assertTrue(content.startswith("# Netscape HTTP Cookie File\n"))
+        self.assertIn(
+            ".xiaohongshu.com\tTRUE\t/\tTRUE\t0\tweb_session\tabc123",
+            content,
+        )
+        self.assertIn(".xiaohongshu.com\tTRUE\t/\tTRUE\t0\ta1\txyz", content)
 
     def test_recognizes_rednote_overseas_domain(self):
         self.assertTrue(main._is_rednote_url(
@@ -652,6 +676,27 @@ class UrlExtractionTests(unittest.TestCase):
         ):
             response = main.process_podcast_endpoint({"url": "https://xhslink.cn/o/example"})
         self.assertEqual(response["status"], "error")
+
+    def test_rednote_video_download_failure_does_not_save_caption_as_article(self):
+        def fail_video_download(*_args, **_kwargs):
+            main._rednote_detected_type.set("video")
+            main._download_failure_detail.set("Requested format is not available")
+            return None, None, "2026-10-28", 0
+
+        with (
+            patch.object(main, "download_audio", side_effect=fail_video_download),
+            patch.object(main, "fetch_rednote_post") as fetch,
+            patch.object(main, "save_rednote_post") as save,
+        ):
+            response = main.process_podcast_endpoint({
+                "url": "https://xhslink.cn/o/video-example",
+            })
+
+        self.assertEqual(response["status"], "error")
+        self.assertIn("视频", response["message"])
+        self.assertIn("REDNOTE_COOKIES", response["message"])
+        fetch.assert_not_called()
+        save.assert_not_called()
 
     def test_rednote_login_redirect_uses_ytdlp_image_metadata(self):
         class FakeYDL:
