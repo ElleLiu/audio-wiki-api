@@ -657,7 +657,7 @@ class UrlExtractionTests(unittest.TestCase):
                 return {
                     "id": "6a9fa35300000000250372ae",
                     "title": "XiaoHongShu video #6a9fa35300000000250372ae",
-                    "description": "被裁满一个月。投出数百份简历\n正文",
+                    "description": "\n  \n被裁满一个月。投出数百份简历\n正文",
                     "thumbnails": [],
                 }
 
