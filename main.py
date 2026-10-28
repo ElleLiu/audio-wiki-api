@@ -596,13 +596,17 @@ def _fetch_rednote_post_with_ytdlp(url: str, *, save_images: bool = False, enabl
             f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
             if len(upload_date) == 8 else datetime.now().strftime("%Y-%m-%d")
         )
+        description = info.get("description") or ""
         title = info.get("title") or ""
         if not title or re.fullmatch(r"XiaoHongShu video #[0-9a-f]+", title, re.IGNORECASE):
-            title = (info.get("description") or "").splitlines()[0].strip()[:80]
+            title = next(
+                (line.strip() for line in description.splitlines() if line.strip()),
+                "",
+            )[:80]
         note = {
             "id": info["id"],
             "title": title,
-            "description": info.get("description") or "",
+            "description": description,
             "publish_date": publish_date,
             "image_urls": image_urls,
             "images_from_thumbnails": True,
