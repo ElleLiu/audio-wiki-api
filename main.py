@@ -198,6 +198,11 @@ def download_audio(url: str, output_dir: str = "/tmp/downloads"):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    if _is_rednote_url(url):
+        resolved_url = _resolve_rednote_media_url(url)
+        if resolved_url != url:
+            print(f"🎬 使用小红书原始笔记地址下载视频音频: {resolved_url}")
+            url = resolved_url
     url = url.replace("m.bilibili.com", "www.bilibili.com")
     http_headers, cookie_path = _download_site_options(url)
     hostname = (urlparse(url).hostname or "").lower()
@@ -470,6 +475,17 @@ def _get_rednote_page(url: str, *, max_redirects: int = 6):
         current_url = next_url
 
     raise ValueError("小红书跳转次数过多")
+
+
+def _resolve_rednote_media_url(url: str) -> str:
+    """Return the canonical xiaohongshu.com note URL before overseas login redirects."""
+    try:
+        response = _get_rednote_page(url)
+        canonical_url = getattr(response, "rednote_canonical_xhs_url", "")
+        return canonical_url or url
+    except Exception as exc:
+        print(f"⚠️ 小红书原始视频地址解析失败，继续使用分享链接: {type(exc).__name__}: {exc}")
+        return url
 
 
 def _compress_and_upload_rednote_image(image_url: str, referer: str) -> tuple[str, bytes]:
