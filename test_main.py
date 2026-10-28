@@ -683,7 +683,7 @@ class UrlExtractionTests(unittest.TestCase):
             def extract_info(self, url, download):
                 return {
                     "id": "6a9fa35300000000250372ae",
-                    "title": "",
+                    "title": " \u200b\n ",
                     "description": "被裁满一个月。投出数百份简历\n正文",
                     "thumbnails": [],
                 }
