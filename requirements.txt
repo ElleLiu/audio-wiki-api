@@ -1,7 +1,7 @@
 fastapi==0.103.1
 uvicorn==0.23.2
 pydantic==2.3.0
-yt-dlp==2026.10.21
+yt-dlp @ https://github.com/viking1304/yt-dlp/archive/728fe46fbaa97d6f03efcaf9e766d4db63338b8d.tar.gz
 requests==2.31.0
 openai>=1.50.0
 python-dotenv==1.0.1

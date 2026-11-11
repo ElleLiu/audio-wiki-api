@@ -1,74 +1,73 @@
 ---
-updated: 2026-10-12T17:59+08:00
+updated: 2026-11-11T16:14:17+08:00
 status: active
-milestone: 异步请求校验失败可通过任务状态返回，并完成线上验证
-last_verified: 2026-10-12T17:58+08:00
+milestone: 抖音提取器修复已本地验证，等待 CI 部署与生产验收
+last_verified: 2026-11-11T16:13:00+08:00
 ---
 
 # audio-wiki-api — Handoff
 
 ## 当前状态
 
-- 当前目标：解决小红书多图 OCR 导致 iOS 快捷指令等待超时的问题，同时保留最终完成反馈。
-- 已完成：任务状态写入 OSS、状态查询接口、按 `message` 判断完成，以及异步参数校验失败的状态回传、部署和线上验证。
-- 进行中：等待在 iPhone 上按文档更新快捷指令并确认设备交互。
-- 阻塞：无。
+- 当前目标：修复抖音链接因平台新签名机制而误报 `Fresh cookies ... are needed`。
+- 已完成：将生产镜像基线改为 Python 3.11，并将 yt-dlp 固定到上游修复 PR 的提交 `728fe46fbaa97d6f03efcaf9e766d4db63338b8d`。
+- 进行中：等待提交、GitHub Actions 构建部署和阿里云 FC 生产验证。
+- 阻塞：本机没有 Docker CLI，容器构建必须由 GitHub Actions 验证。
 
 ## 已完成并验证
 
 | 事项 | 结果 | 证据 |
 |---|---|---|
-| 最新线上代码基线 | 参数校验失败状态回传已部署 | 提交 `dd855d2` |
-| 任务状态模型 | 支持 `queued/processing/succeeded/failed` | `main.py` 的 `save_task_status`、`get_task_status` |
-| 快捷指令协议 | UUID + FC 异步请求头 + 5 秒轮询 | `docs/rednote-shortcut.md` |
-| 回归测试 | 新增任务跟踪及原有小红书分支 7 项定向测试通过 | README 中的测试命令边界说明 |
-| 语法检查 | `main.py`、`test_main.py` 编译通过 | `PYTHONPYCACHEPREFIX=/tmp/... python3 -m py_compile ...` |
-| 生产部署 | GitHub Actions 成功，FC 镜像为 `dd855d2` | Actions run `38232794287`；FC `lastUpdateStatus=Successful` |
-| 异步提交 | POST 在 1.84 秒返回 `202` | 测试任务 `codex-poll-affb8da-02` |
-| 状态轮询 | `processing` 最终变为 `succeeded` 并返回文件名 | 线上 `GET /api/tasks/{task_id}` |
-| 简化完成判断 | `queued/processing` 不含 `message`；成功或失败才返回 `message` | 提交 `6840c8a`；Actions run `38220057649` |
-| 简化轮询线上验证 | POST 1.93 秒返回 `202`；`processing` 无 `message`；最终 `succeeded` 且含保存通知 | 测试任务 `codex-message-6840c8a-01`；临时状态对象已清理 |
-| 参数校验失败回传 | 合法 `task_id` 的校验错误写为 `failed`，不再永久停留在 `queued` | 线上错误类型测试返回具体布尔值提示；临时状态对象已清理 |
+| 失败根因 | 新鲜且结构完整的 Cookie 仍被旧提取器误报；不是 URL 提取或 Cookie 格式问题 | 生产任务 `codex-douyin-retry-20261111-02` 的 FC 日志 |
+| Python 运行时 | 依赖可在 Python 3.12 隔离环境安装；生产 Dockerfile 已改为 Python 3.11 | `Dockerfile`、临时隔离环境安装结果 |
+| yt-dlp 固定版本 | PR 提交构建为 `2026.10.26`，包含 `_sign_query` 和 `_get_uifid` | `requirements.txt`；运行时自检 |
+| 回归测试 | 47 项测试全部通过 | `/private/tmp/audio-wiki-douyin-fix-venv/bin/python -m unittest -v test_main.py` |
+| 语法检查 | `main.py`、`test_main.py` 编译通过 | `PYTHONPYCACHEPREFIX=/private/tmp/audio-wiki-douyin-fix-pycache ... -m py_compile ...` |
+| 抖音真实链接静态验收 | 无 Cookie 元数据提取成功，得到视频 ID、标题和 252 秒时长 | `yt-dlp --simulate ... https://v.douyin.com/IFY_so3Xt3I/` |
 
 ## 尚未验证
 
-- iPhone 快捷指令的实际菜单、循环和停止分支，需要在设备上配置后确认。
+- GitHub Actions 是否能用 Python 3.11 镜像完成 Docker 构建并更新 FC。
+- 阿里云香港生产出口是否能下载、转写并将原抖音链接写入 OSS/Obsidian。
+- 升级后的 yt-dlp 对真实小红书视频和 B 站链接是否无回归。
 
 ## 阻塞与需要决策
 
-- 无代码或部署阻塞。设备端验收需要用户按 `docs/rednote-shortcut.md` 更新快捷指令。
+- 本机没有 Docker CLI，容器构建需由 GitHub Actions 验证；无需额外人工决策。
 
 ## 下一步行动
 
-1. 将快捷指令字典中的 `save_images`、`enable_ocr` 类型确认设为“布尔值”，重新提交真实链接。
-2. 确认成功或失败的 `message` 均会触发通知并停止循环，处理中会继续轮询。
+1. 提交并推送 `Dockerfile`、`requirements.txt` 和文档更新。
+2. 确认 GitHub Actions 成功，FC `lastUpdateStatus=Successful` 且镜像为新提交。
+3. 重提 `https://v.douyin.com/IFY_so3Xt3I/`，轮询到 `succeeded` 并确认生成文件。
+4. 用已授权的真实小红书视频和 B 站链接各做一次回归验证。
 
 ## 关键文件
 
-- `main.py`：任务状态存取、跟踪执行和状态查询接口。
-- `test_main.py`：任务跟踪与兼容测试。
-- `docs/rednote-shortcut.md`：快捷指令配置。
-- `README.md`：稳定接口和运行说明。
+- `Dockerfile`：Python 3.11 生产镜像。
+- `requirements.txt`：固定 yt-dlp 抖音修复提交。
+- `main.py`：平台下载、转写和任务状态逻辑。
+- `test_main.py`：URL、Cookie、小红书与异步任务回归测试。
 
 ## 验证命令与期望结果
 
 ```text
 命令：python3 -m unittest -v test_main.py
-期望：Docker/CI 的 Python 3.10 环境全部通过；本机 Python 3.9 的两个既有环境失败见 README。
+期望：47 项测试通过。
 
-命令：env PYTHONPYCACHEPREFIX=/tmp/audio-wiki-pycache python3 -m py_compile main.py test_main.py
+命令：python3 -m py_compile main.py test_main.py
 期望：退出码 0。
 
-线上检查：异步 POST 返回 202；随后 GET /api/tasks/{task_id} 最终返回 succeeded 或 failed。
-验证边界：设备端快捷指令交互仍需在 iPhone 上验收。
+线上检查：POST 返回 202；GET /api/tasks/{task_id} 最终返回 succeeded；FC 日志不再出现 Fresh cookies 错误。
+验证边界：本地元数据成功不等于生产下载、ASR、OSS 写入和设备端通知已验收。
 ```
 
 ## 千万别做
 
-- 不要恢复“HTTP 返回后继续 daemon 线程”的小红书方案；FC 可能回收实例。
-- 不要把 OSS/平台凭证、Cookie 或线上日志原文写入项目文档。
-- 不要删除未跟踪的 `.claude/` 或 `oss_lifecycle_cleanup.xml`。
+- 不要把 `DOUYIN_COOKIES`、其他 Cookie 或云端凭证写入仓库或日志。
+- 不要把本地 `--simulate` 成功当作阿里云生产链路成功。
+- 不要将 yt-dlp 改回未包含抖音签名修复的正式版本后直接部署。
 
 ## 回退
 
-代码通过 Git 回退对应提交；任务状态位于 `temp_audio/task_status/`，回退代码不要求删除已有状态对象。
+若新镜像部署或生产验证失败，将 FC 镜像回退到提交 `1657a338c6d7fa07824058b44d75b65f5f978fbc` 对应的 ACR 标签。

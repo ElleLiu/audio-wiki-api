@@ -48,9 +48,9 @@ python3 -m unittest -v test_main.py
 env PYTHONPYCACHEPREFIX=/tmp/audio-wiki-pycache python3 -m py_compile main.py test_main.py
 ```
 
-本机系统 Python 3.9 未安装 Pillow，且不支持项目既有测试使用的
-`int.bit_count()`；完整测试需在安装 `requirements.txt` 的 Python 3.10+
-环境运行。
+完整测试需在安装 `requirements.txt` 的 Python 3.11+ 环境运行。生产镜像使用
+Python 3.11；yt-dlp 暂时固定到上游抖音修复 PR 的确切提交，升级前应重新验证
+抖音、小红书和 B 站下载链路。
 
 ## 部署与排障
 

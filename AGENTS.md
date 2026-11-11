@@ -21,7 +21,7 @@ https://github.com/ElleLiu/audio-wiki-api
 
 关键文件：
 - `main.py` — FastAPI 主程序，所有业务逻辑在这里
-- `Dockerfile` — Python 3.10-slim 基础镜像 + FFmpeg
+- `Dockerfile` — Python 3.11-slim 基础镜像 + FFmpeg
 - `requirements.txt` — 依赖
 
 ## API 接口
@@ -148,11 +148,13 @@ ydl_opts = {
 
 ## 待解决问题
 
-### P1：抖音视频下载失败
+### P1：抖音视频下载兼容性
 
-**待获取**：具体的 FC 日志报错信息。
+**已确认根因**：抖音新增请求签名后，正式版 yt-dlp 即使使用新鲜 Cookie 也会误报
+`Fresh cookies ... are needed`。
 
-**预判**：抖音短链可能需要 cookie，或需升级 yt-dlp。
+**当前方案**：Python 3.11 镜像，并将 yt-dlp 固定到上游抖音修复 PR 的确切提交；
+该依赖尚未合并，升级或替换前必须重新验证抖音、小红书和 B 站下载链路。
 
 ### P2：知乎登录墙
 
@@ -172,12 +174,13 @@ FC 函数当前需要的环境变量：
 | `OSS_ENDPOINT` | 默认 `https://oss-cn-hongkong.aliyuncs.com` |
 | `DASHSCOPE_BASE_URL` | 默认 `https://dashscope.aliyuncs.com/api/v1` |
 | `BILIBILI_COOKIES` | Netscape 格式的 cookie 文件全文，从浏览器插件导出 |
+| `DOUYIN_COOKIES` | Netscape 格式的抖音 cookie 文件全文；当前修复可在无 Cookie 时提取，但保留用于兼容登录态内容 |
 | `ZHIHU_COOKIE` | 知乎登录态 Cookie 字符串（可选，未设置时知乎内容可能触发登录墙）|
 
 ## 安全事项
 
 - **AccessKey 务必用 RAM 用户**，权限最小化（只给 OSS 权限），不要用主账号 Key
-- **BILIBILI_COOKIES 含登录态**，泄露等于账号被盗，注意不要 commit 到 GitHub
+- **平台 Cookie 含登录态**，泄露等于账号被盗，注意不要 commit 到 GitHub
 - FC HTTP 触发器是公网可访问的，会持续被网络扫描（GET /、GET /favicon.ico 等），返回 404 是正常背景噪音，不是攻击
 
 ## 部署流程（全自动）
