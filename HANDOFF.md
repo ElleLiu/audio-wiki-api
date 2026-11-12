@@ -1,8 +1,8 @@
 ---
-updated: 2026-11-11T16:14:17+08:00
+updated: 2026-11-12T13:34:31+08:00
 status: active
-milestone: 抖音提取器修复已本地验证，等待 CI 部署与生产验收
-last_verified: 2026-11-11T16:13:00+08:00
+milestone: 抖音提取器修复已部署并通过生产端到端验收
+last_verified: 2026-11-12T13:33:20+08:00
 ---
 
 # audio-wiki-api — Handoff
@@ -10,9 +10,9 @@ last_verified: 2026-11-11T16:13:00+08:00
 ## 当前状态
 
 - 当前目标：修复抖音链接因平台新签名机制而误报 `Fresh cookies ... are needed`。
-- 已完成：将生产镜像基线改为 Python 3.11，并将 yt-dlp 固定到上游修复 PR 的提交 `728fe46fbaa97d6f03efcaf9e766d4db63338b8d`。
-- 进行中：等待提交、GitHub Actions 构建部署和阿里云 FC 生产验证。
-- 阻塞：本机没有 Docker CLI，容器构建必须由 GitHub Actions 验证。
+- 已完成：Python 3.11 镜像和 yt-dlp 修复提交已部署；原抖音链接完成下载、转写和 OSS/Obsidian 写入。
+- 进行中：等待真实小红书视频和 B 站链接的回归验证。
+- 阻塞：无。
 
 ## 已完成并验证
 
@@ -24,23 +24,21 @@ last_verified: 2026-11-11T16:13:00+08:00
 | 回归测试 | 47 项测试全部通过 | `/private/tmp/audio-wiki-douyin-fix-venv/bin/python -m unittest -v test_main.py` |
 | 语法检查 | `main.py`、`test_main.py` 编译通过 | `PYTHONPYCACHEPREFIX=/private/tmp/audio-wiki-douyin-fix-pycache ... -m py_compile ...` |
 | 抖音真实链接静态验收 | 无 Cookie 元数据提取成功，得到视频 ID、标题和 252 秒时长 | `yt-dlp --simulate ... https://v.douyin.com/IFY_so3Xt3I/` |
+| CI 与部署 | GitHub Actions 成功，FC 为 `Active / Successful` 并使用新镜像 | Actions run `42985709717`；镜像提交 `29b2650bcb1d12dab23d4296c59decd377a2cd28` |
+| 抖音生产验收 | 最终 `succeeded`，已保存 Markdown 笔记 | 任务 `codex-douyin-fix-20261112-01` |
 
 ## 尚未验证
 
-- GitHub Actions 是否能用 Python 3.11 镜像完成 Docker 构建并更新 FC。
-- 阿里云香港生产出口是否能下载、转写并将原抖音链接写入 OSS/Obsidian。
 - 升级后的 yt-dlp 对真实小红书视频和 B 站链接是否无回归。
 
 ## 阻塞与需要决策
 
-- 本机没有 Docker CLI，容器构建需由 GitHub Actions 验证；无需额外人工决策。
+- 无当前阻塞；上游 PR 尚未合并，后续升级 yt-dlp 时需重新判断是否可回归正式版。
 
 ## 下一步行动
 
-1. 提交并推送 `Dockerfile`、`requirements.txt` 和文档更新。
-2. 确认 GitHub Actions 成功，FC `lastUpdateStatus=Successful` 且镜像为新提交。
-3. 重提 `https://v.douyin.com/IFY_so3Xt3I/`，轮询到 `succeeded` 并确认生成文件。
-4. 用已授权的真实小红书视频和 B 站链接各做一次回归验证。
+1. 用已授权的真实小红书视频和 B 站链接各做一次回归验证。
+2. 关注上游 yt-dlp PR #17826；合并并发布后再评估回归正式版本。
 
 ## 关键文件
 
